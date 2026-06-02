@@ -5,7 +5,6 @@ from groq import Groq
 from supabase import create_client, Client
 import os
 
-# ========== PAGE CONFIG ==========
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
 st.title("⚓ Anchorpoint AI Navigator")
@@ -16,10 +15,8 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 
-# ========== INIT SUPABASE CLIENT ==========
+# ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-
-# ========== GROQ CLIENT ==========
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ========== LOAD KNOWLEDGE FILE ==========
@@ -34,19 +31,21 @@ if "guest_mode" not in st.session_state:
 if "current_conv_id" not in st.session_state:
     st.session_state.current_conv_id = None
 if "conversations_list" not in st.session_state:
-    st.session_state.conversations_list = []  # for authenticated users
+    st.session_state.conversations_list = []
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "edit_msg_id" not in st.session_state:
     st.session_state.edit_msg_id = None
 
-# ========== HELPER FUNCTIONS ==========
+# ========== AUTH HELPERS ==========
 def login_user(email, password):
     try:
         resp = supabase.auth.sign_in_with_password({"email": email, "password": password})
         st.session_state.auth_user = resp.user
         st.session_state.guest_mode = False
         load_user_conversations()
+        # Ensure profile exists (fallback)
+        ensure_profile_exists()
         return True
     except Exception as e:
         st.error(f"Login failed: {e}")
@@ -57,12 +56,29 @@ def signup_user(email, password):
         resp = supabase.auth.sign_up({"email": email, "password": password})
         st.session_state.auth_user = resp.user
         st.session_state.guest_mode = False
-        # Profile is auto-created by SQL trigger
+        # Profile should be created by trigger, but we'll ensure it exists
+        ensure_profile_exists()
         load_user_conversations()
         return True
     except Exception as e:
         st.error(f"Signup failed: {e}")
         return False
+
+def ensure_profile_exists():
+    """Check if profile exists; if not, create it."""
+    if not st.session_state.auth_user:
+        return
+    try:
+        resp = supabase.table("profiles").select("id").eq("id", st.session_state.auth_user.id).execute()
+        if not resp.data:
+            # Insert profile manually
+            supabase.table("profiles").insert({
+                "id": st.session_state.auth_user.id,
+                "email": st.session_state.auth_user.email,
+                "full_name": st.session_state.auth_user.user_metadata.get("full_name", "")
+            }).execute()
+    except Exception as e:
+        st.warning(f"Profile check failed: {e}")
 
 def logout_user():
     supabase.auth.sign_out()
@@ -75,43 +91,55 @@ def logout_user():
 def load_user_conversations():
     if not st.session_state.auth_user:
         return
-    user_id = st.session_state.auth_user.id
-    resp = supabase.table("conversations").select("*").eq("user_id", user_id).order("updated_at", desc=True).execute()
-    st.session_state.conversations_list = resp.data
-    if st.session_state.conversations_list and not st.session_state.current_conv_id:
-        st.session_state.current_conv_id = st.session_state.conversations_list[0]["id"]
-        load_conversation_messages(st.session_state.current_conv_id)
+    try:
+        resp = supabase.table("conversations").select("*").eq("user_id", st.session_state.auth_user.id).order("updated_at", desc=True).execute()
+        st.session_state.conversations_list = resp.data
+        if st.session_state.conversations_list and not st.session_state.current_conv_id:
+            st.session_state.current_conv_id = st.session_state.conversations_list[0]["id"]
+            load_conversation_messages(st.session_state.current_conv_id)
+        elif not st.session_state.conversations_list:
+            # No conversations yet; create a new one
+            create_new_conversation()
+    except Exception as e:
+        st.error(f"Error loading conversations: {e}")
 
 def load_conversation_messages(conv_id):
-    resp = supabase.table("messages").select("*").eq("conversation_id", conv_id).order("created_at", asc=True).execute()
-    # Convert to the format used in the chat (list of dicts with role, content)
-    messages = [{"role": m["role"], "content": m["content"], "id": m["id"], "parent_id": m.get("parent_id")} for m in resp.data]
-    # Ensure system message is first
-    if not messages or messages[0]["role"] != "system":
-        system_msg = {"role": "system", "content": system_content + "\n\nRemember: You are a Navigator. Lead with questions.", "id": str(uuid.uuid4())}
-        messages.insert(0, system_msg)
-    st.session_state.messages = messages
-    st.session_state.current_conv_id = conv_id
+    try:
+        resp = supabase.table("messages").select("*").eq("conversation_id", conv_id).order("created_at", asc=True).execute()
+        messages = [{"role": m["role"], "content": m["content"], "id": m["id"], "parent_id": m.get("parent_id")} for m in resp.data]
+        # Ensure system message is first
+        if not messages or messages[0]["role"] != "system":
+            system_msg = {"role": "system", "content": system_content + "\n\nRemember: You are a Navigator. Lead with questions.", "id": str(uuid.uuid4())}
+            messages.insert(0, system_msg)
+        st.session_state.messages = messages
+        st.session_state.current_conv_id = conv_id
+    except Exception as e:
+        st.error(f"Error loading messages: {e}")
 
 def create_new_conversation():
     if st.session_state.auth_user:
-        # Create in Supabase
-        new_conv = {
-            "user_id": st.session_state.auth_user.id,
-            "title": "New conversation",
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }
-        resp = supabase.table("conversations").insert(new_conv).execute()
-        conv_id = resp.data[0]["id"]
-        # Add system message
-        supabase.table("messages").insert({
-            "conversation_id": conv_id,
-            "role": "system",
-            "content": system_content + "\n\nRemember: You are a Navigator. Lead with questions."
-        }).execute()
-        load_user_conversations()
-        load_conversation_messages(conv_id)
+        try:
+            new_conv = {
+                "user_id": st.session_state.auth_user.id,
+                "title": "New conversation",
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }
+            resp = supabase.table("conversations").insert(new_conv).execute()
+            conv_id = resp.data[0]["id"]
+            # Add system message
+            supabase.table("messages").insert({
+                "conversation_id": conv_id,
+                "role": "system",
+                "content": system_content + "\n\nRemember: You are a Navigator. Lead with questions."
+            }).execute()
+            load_user_conversations()
+            load_conversation_messages(conv_id)
+        except Exception as e:
+            st.error(f"Error creating conversation: {e}")
+            # Fallback: create empty messages list for guest-like experience
+            st.session_state.messages = [{"role": "system", "content": system_content + "\n\nRemember: You are a Navigator. Lead with questions.", "id": str(uuid.uuid4())}]
+            st.session_state.current_conv_id = None
     else:
         # Guest mode: simply reset messages
         st.session_state.messages = [{"role": "system", "content": system_content + "\n\nRemember: You are a Navigator. Lead with questions.", "id": str(uuid.uuid4())}]
@@ -120,14 +148,17 @@ def create_new_conversation():
 
 def delete_conversation(conv_id):
     if st.session_state.auth_user:
-        supabase.table("conversations").delete().eq("id", conv_id).execute()
-        load_user_conversations()
-        if st.session_state.current_conv_id == conv_id:
-            if st.session_state.conversations_list:
-                st.session_state.current_conv_id = st.session_state.conversations_list[0]["id"]
-                load_conversation_messages(st.session_state.current_conv_id)
-            else:
-                create_new_conversation()
+        try:
+            supabase.table("conversations").delete().eq("id", conv_id).execute()
+            load_user_conversations()
+            if st.session_state.current_conv_id == conv_id:
+                if st.session_state.conversations_list:
+                    st.session_state.current_conv_id = st.session_state.conversations_list[0]["id"]
+                    load_conversation_messages(st.session_state.current_conv_id)
+                else:
+                    create_new_conversation()
+        except Exception as e:
+            st.error(f"Error deleting conversation: {e}")
         st.rerun()
 
 def switch_conversation(conv_id):
@@ -136,33 +167,42 @@ def switch_conversation(conv_id):
 
 def update_conversation_title(conv_id, title):
     if st.session_state.auth_user:
-        supabase.table("conversations").update({"title": title, "updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
-        load_user_conversations()
+        try:
+            supabase.table("conversations").update({"title": title, "updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
+            load_user_conversations()
+        except Exception as e:
+            st.error(f"Error updating title: {e}")
 
 def save_message_to_db(conv_id, role, content, parent_id=None):
     if st.session_state.auth_user:
-        supabase.table("messages").insert({
-            "conversation_id": conv_id,
-            "role": role,
-            "content": content,
-            "parent_id": parent_id
-        }).execute()
+        try:
+            supabase.table("messages").insert({
+                "conversation_id": conv_id,
+                "role": role,
+                "content": content,
+                "parent_id": parent_id
+            }).execute()
+        except Exception as e:
+            st.error(f"Error saving message: {e}")
 
 def save_conversation_messages(conv_id, messages_list):
     if st.session_state.auth_user:
-        # Delete all existing messages for this conversation and reinsert (simpler)
-        supabase.table("messages").delete().eq("conversation_id", conv_id).execute()
-        for msg in messages_list:
-            if msg["role"] == "system":
-                continue  # system message is handled separately at creation
-            supabase.table("messages").insert({
-                "conversation_id": conv_id,
-                "role": msg["role"],
-                "content": msg["content"],
-                "parent_id": msg.get("parent_id")
-            }).execute()
-        # Update conversation updated_at
-        supabase.table("conversations").update({"updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
+        try:
+            # Delete all existing messages for this conversation (except system? we'll keep it simple)
+            supabase.table("messages").delete().eq("conversation_id", conv_id).execute()
+            for msg in messages_list:
+                if msg["role"] == "system":
+                    continue  # system message already handled at creation
+                supabase.table("messages").insert({
+                    "conversation_id": conv_id,
+                    "role": msg["role"],
+                    "content": msg["content"],
+                    "parent_id": msg.get("parent_id")
+                }).execute()
+            # Update conversation updated_at
+            supabase.table("conversations").update({"updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
+        except Exception as e:
+            st.error(f"Error saving conversation: {e}")
 
 def get_assistant_response(messages_list):
     api_messages = [{"role": m["role"], "content": m["content"]} for m in messages_list if m["role"] != "system"]
@@ -179,7 +219,7 @@ def get_assistant_response(messages_list):
     )
     return response.choices[0].message.content
 
-# ========== SIDEBAR: AUTH & HISTORY ==========
+# ========== SIDEBAR ==========
 with st.sidebar:
     if st.session_state.auth_user:
         st.write(f"👤 {st.session_state.auth_user.email}")
@@ -223,13 +263,11 @@ with st.sidebar:
             st.caption(conv.get("updated_at", conv["created_at"])[:10])
     else:
         st.info("💡 Sign in to save conversations and access history across devices.")
-        # Show a simple "current session" note for guest
         if st.session_state.messages:
             st.caption("Guest session (not saved)")
 
 # ========== MAIN CHAT AREA ==========
 if st.session_state.messages:
-    # Display messages (skip system message)
     for msg in st.session_state.messages:
         if msg["role"] == "system":
             continue
@@ -240,7 +278,6 @@ if st.session_state.messages:
                     st.session_state.edit_msg_id = msg["id"]
                     st.rerun()
 else:
-    # First time: create a new conversation or show intro
     if not st.session_state.messages:
         create_new_conversation()
         st.rerun()
@@ -252,12 +289,9 @@ if st.session_state.edit_msg_id:
         with st.form(key="edit_form"):
             new_content = st.text_area("Edit your message:", value=msg_to_edit["content"])
             if st.form_submit_button("Save and regenerate"):
-                # Update the message content
                 msg_to_edit["content"] = new_content
-                # Delete all messages after this one
                 idx = st.session_state.messages.index(msg_to_edit)
                 st.session_state.messages = st.session_state.messages[:idx+1]
-                # Regenerate assistant response
                 new_reply = get_assistant_response(st.session_state.messages)
                 assistant_msg = {
                     "id": str(uuid.uuid4()),
@@ -266,10 +300,8 @@ if st.session_state.edit_msg_id:
                     "parent_id": msg_to_edit["id"]
                 }
                 st.session_state.messages.append(assistant_msg)
-                # Save to DB if authenticated
                 if st.session_state.auth_user and st.session_state.current_conv_id:
                     save_conversation_messages(st.session_state.current_conv_id, st.session_state.messages)
-                # Update conversation title if it's the first user message
                 user_msgs = [m for m in st.session_state.messages if m["role"] == "user"]
                 if len(user_msgs) == 1 and st.session_state.auth_user:
                     title = user_msgs[0]["content"][:40] + ("..." if len(user_msgs[0]["content"]) > 40 else "")
@@ -283,46 +315,29 @@ if st.session_state.edit_msg_id:
 # Chat input
 if not st.session_state.edit_msg_id:
     if prompt := st.chat_input("Describe an operational process or challenge..."):
-        # Add user message
-        user_msg = {
-            "id": str(uuid.uuid4()),
-            "role": "user",
-            "content": prompt
-        }
+        user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": prompt}
         st.session_state.messages.append(user_msg)
-        # Get assistant response
         with st.spinner("Diagnosing..."):
             reply = get_assistant_response(st.session_state.messages)
-        assistant_msg = {
-            "id": str(uuid.uuid4()),
-            "role": "assistant",
-            "content": reply,
-            "parent_id": user_msg["id"]
-        }
+        assistant_msg = {"id": str(uuid.uuid4()), "role": "assistant", "content": reply, "parent_id": user_msg["id"]}
         st.session_state.messages.append(assistant_msg)
 
-        # Save to DB if authenticated
         if st.session_state.auth_user:
             if not st.session_state.current_conv_id:
-                # This should not happen; but create a new conversation just in case
                 create_new_conversation()
             else:
                 save_conversation_messages(st.session_state.current_conv_id, st.session_state.messages)
-                # Update conversation title (if first user message)
                 user_msgs = [m for m in st.session_state.messages if m["role"] == "user"]
                 if len(user_msgs) == 1:
                     title = user_msgs[0]["content"][:40] + ("..." if len(user_msgs[0]["content"]) > 40 else "")
                     update_conversation_title(st.session_state.current_conv_id, title)
-                # Refresh conversation list to show updated title/timestamp
                 load_user_conversations()
         else:
-            # Guest mode: no persistence, but show a banner reminder
             if len([m for m in st.session_state.messages if m["role"] == "user"]) == 1:
-                st.info("💡 You're in guest mode. [Sign up](#) to save this conversation and access it later.")
-
+                st.info("💡 You're in guest mode. Sign up to save this conversation.")
         st.rerun()
 
-# ========== SUMMARY GENERATION ==========
+# Summary generation
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -352,7 +367,6 @@ if "summary" in st.session_state:
     st.caption("📸 Screenshot this to share with your team.")
     if st.button("Start new conversation"):
         create_new_conversation()
-        # Clear summary flag
         del st.session_state.summary
         del st.session_state.summary_shown
         st.rerun()
