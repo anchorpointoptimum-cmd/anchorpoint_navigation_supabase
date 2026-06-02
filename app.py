@@ -7,30 +7,51 @@ import os
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
-# ========== BRANDING (CSS + FAVICON) ==========
+# ========== BRANDING (CSS with readable backgrounds) ==========
 st.markdown("""
 <style>
-    .stApp { background-color: #f8fafc; }
+    /* Main app background – light gray for contrast */
+    .stApp { background-color: #e9ecef; }
+    
+    /* Sidebar stays branded */
     [data-testid="stSidebar"] {
         background-color: #1a3e60;
         padding-top: 2rem;
     }
     [data-testid="stSidebar"] * { color: #ffffff !important; }
     [data-testid="stSidebar"] button:hover { background-color: #2c5a7a !important; }
-    h1, h2, h3 { color: #1a3e60; }
+    
+    /* Headers and text */
+    h1, h2, h3, .stMarkdown, .stCaption { color: #1a3e60; }
+    
+    /* Links */
     a { color: #d4af37; }
-    /* No custom chat message background – using Streamlit default.
-       To use teal instead, uncomment the line below: */
-    /* [data-testid="stChatMessage"] { background-color: #e0f2f1; border-radius: 12px; padding: 8px; } */
+    
+    /* Buttons */
     .stButton button {
         background-color: #1a3e60;
         color: white;
         border-radius: 8px;
     }
     .stButton button:hover { background-color: #2c5a7a; }
+    
+    /* Info/Warning boxes */
     .stAlert { border-left-color: #d4af37; }
+    
+    /* Chat messages – clearly visible */
+    [data-testid="stChatMessage"] {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border-radius: 12px;
+        padding: 10px;
+        margin-bottom: 8px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    /* Slight variation for assistant messages (optional) */
+    [data-testid="stChatMessage"][data-testid*="assistant"] {
+        background-color: #f8f9fa !important;
+    }
 </style>
-<head><link rel="icon" type="image/png" href="https://via.placeholder.com/32x32?text=A"></head>
 """, unsafe_allow_html=True)
 
 st.title("⚓ Anchorpoint AI Navigator")
