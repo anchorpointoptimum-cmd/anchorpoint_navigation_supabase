@@ -7,6 +7,30 @@ import os
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
+# ========== BRANDING (CSS + FAVICON) ==========
+st.markdown("""
+<style>
+    .stApp { background-color: #f8fafc; }
+    [data-testid="stSidebar"] {
+        background-color: #1a3e60;
+        padding-top: 2rem;
+    }
+    [data-testid="stSidebar"] * { color: #ffffff !important; }
+    [data-testid="stSidebar"] button:hover { background-color: #2c5a7a !important; }
+    h1, h2, h3 { color: #1a3e60; }
+    a { color: #d4af37; }
+    [data-testid="stChatMessage"]:nth-child(odd) { background-color: #e6f0fa; }
+    .stButton button {
+        background-color: #1a3e60;
+        color: white;
+        border-radius: 8px;
+    }
+    .stButton button:hover { background-color: #2c5a7a; }
+    .stAlert { border-left-color: #d4af37; }
+</style>
+<head><link rel="icon" type="image/png" href="https://via.placeholder.com/32x32?text=A"></head>
+""", unsafe_allow_html=True)
+
 st.title("⚓ Anchorpoint AI Navigator")
 st.caption("Diagnosing operational gaps. Stewarding certainty.")
 
@@ -236,6 +260,10 @@ def get_assistant_response(messages_list):
 
 # ========== SIDEBAR ==========
 with st.sidebar:
+    # ----- LOGO (anchorpoint_logo.jpeg) -----
+    st.image("https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_logo.jpeg", use_container_width=True)
+    st.markdown("---")
+    
     if st.session_state.auth_user:
         st.write(f"👤 {st.session_state.auth_user.email}")
         if st.button("Logout"):
