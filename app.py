@@ -7,7 +7,6 @@ import os
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
-# Branding
 st.title("⚓ Anchorpoint AI Navigator")
 st.caption("Diagnosing operational gaps. Stewarding certainty.")
 
@@ -37,6 +36,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "edit_msg_id" not in st.session_state:
     st.session_state.edit_msg_id = None
+if "editing_title_id" not in st.session_state:
+    st.session_state.editing_title_id = None
 
 # ========== FRIENDLY ERROR HELPER ==========
 def friendly_error(user_message: str):
@@ -79,7 +80,7 @@ def ensure_profile_exists():
                 "full_name": st.session_state.auth_user.user_metadata.get("full_name", "")
             }).execute()
     except Exception:
-        pass  # Non‑critical; profile will be created on first conversation save
+        pass
 
 def logout_user():
     supabase.auth.sign_out()
@@ -195,7 +196,7 @@ def update_conversation_title(conv_id, title):
             supabase.table("conversations").update({"title": title, "updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
             load_user_conversations()
         except Exception:
-            pass  # Title update is non‑critical
+            friendly_error("Could not update title.")
 
 def save_conversation_messages(conv_id, messages_list):
     if st.session_state.auth_user:
@@ -266,14 +267,34 @@ with st.sidebar:
 
     if st.session_state.auth_user:
         for conv in st.session_state.conversations_list:
-            display_title = conv["title"][:35] + ("..." if len(conv["title"]) > 35 else "")
+            conv_id = conv["id"]
+            is_editing = (st.session_state.editing_title_id == conv_id)
+            
             col1, col2 = st.columns([0.85, 0.15])
             with col1:
-                if st.button(display_title, key=f"conv_{conv['id']}", use_container_width=True):
-                    switch_conversation(conv["id"])
+                if is_editing:
+                    new_title = st.text_input("Title", value=conv["title"], key=f"edit_title_{conv_id}", label_visibility="collapsed")
+                    if st.button("💾 Save", key=f"save_title_{conv_id}"):
+                        if new_title.strip():
+                            update_conversation_title(conv_id, new_title.strip())
+                            st.session_state.editing_title_id = None
+                            st.rerun()
+                        else:
+                            friendly_error("Title cannot be empty.")
+                    if st.button("Cancel", key=f"cancel_title_{conv_id}"):
+                        st.session_state.editing_title_id = None
+                        st.rerun()
+                else:
+                    display_title = conv["title"][:35] + ("..." if len(conv["title"]) > 35 else "")
+                    if st.button(display_title, key=f"conv_{conv_id}", use_container_width=True):
+                        switch_conversation(conv_id)
             with col2:
-                if st.button("🗑️", key=f"del_{conv['id']}"):
-                    delete_conversation(conv["id"])
+                if not is_editing:
+                    if st.button("✏️", key=f"rename_{conv_id}"):
+                        st.session_state.editing_title_id = conv_id
+                        st.rerun()
+                if st.button("🗑️", key=f"del_{conv_id}"):
+                    delete_conversation(conv_id)
             st.caption(conv.get("updated_at", conv["created_at"])[:10])
     else:
         st.info("💡 Sign in to save conversations and contribute to your governance profile.")
@@ -296,7 +317,7 @@ else:
         create_new_conversation()
         st.rerun()
 
-# Edit modal
+# Edit modal (for message content)
 if st.session_state.edit_msg_id:
     msg_to_edit = next((m for m in st.session_state.messages if m.get("id") == st.session_state.edit_msg_id), None)
     if msg_to_edit:
