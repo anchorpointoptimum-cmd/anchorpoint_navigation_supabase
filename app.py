@@ -37,6 +37,10 @@ if "messages" not in st.session_state:
 if "edit_msg_id" not in st.session_state:
     st.session_state.edit_msg_id = None
 
+# ========== FRIENDLY ERROR HELPER ==========
+def friendly_error(user_message: str):
+    st.error(f"⚠️ {user_message}")
+
 # ========== AUTH HELPERS ==========
 def login_user(email, password):
     try:
@@ -46,8 +50,8 @@ def login_user(email, password):
         ensure_profile_exists()
         load_user_conversations()
         return True
-    except Exception as e:
-        st.error(f"Login failed: {e}")
+    except Exception:
+        friendly_error("Unable to sign in. Check your email and password, then try again.")
         return False
 
 def signup_user(email, password):
@@ -58,8 +62,8 @@ def signup_user(email, password):
         ensure_profile_exists()
         load_user_conversations()
         return True
-    except Exception as e:
-        st.error(f"Signup failed: {e}")
+    except Exception:
+        friendly_error("Signup failed. The email may already be registered, or the password is too weak.")
         return False
 
 def ensure_profile_exists():
@@ -73,8 +77,9 @@ def ensure_profile_exists():
                 "email": st.session_state.auth_user.email,
                 "full_name": st.session_state.auth_user.user_metadata.get("full_name", "")
             }).execute()
-    except Exception as e:
-        st.warning(f"Profile check failed: {e}")
+    except Exception:
+        # Non‑critical; profile will be created on first conversation save
+        pass
 
 def logout_user():
     supabase.auth.sign_out()
@@ -95,21 +100,21 @@ def load_user_conversations():
             load_conversation_messages(st.session_state.current_conv_id)
         elif not st.session_state.conversations_list:
             create_new_conversation()
-    except Exception as e:
-        st.error(f"Error loading conversations: {e}")
+    except Exception:
+        friendly_error("Could not load your conversation history. Refresh the page.")
+        st.session_state.conversations_list = []
 
 def load_conversation_messages(conv_id):
     try:
         resp = supabase.table("messages").select("*").eq("conversation_id", conv_id).order("created_at", asc=True).execute()
         messages = [{"role": m["role"], "content": m["content"], "id": m["id"], "parent_id": m.get("parent_id")} for m in resp.data]
-        # Ensure system message is first
         if not messages or messages[0]["role"] != "system":
             system_msg = {"role": "system", "content": system_content + "\n\nRemember: You are a Navigator. Lead with questions.", "id": str(uuid.uuid4())}
             messages.insert(0, system_msg)
         st.session_state.messages = messages
         st.session_state.current_conv_id = conv_id
-    except Exception as e:
-        st.error(f"Error loading messages: {e}")
+    except Exception:
+        friendly_error("Unable to load conversation. Please try refreshing.")
 
 def create_new_conversation():
     system_msg_content = system_content + "\n\nRemember: You are a Navigator. Lead with questions."
@@ -150,8 +155,9 @@ def create_new_conversation():
             ]
             st.session_state.current_conv_id = conv_id
             load_user_conversations()
-        except Exception as e:
-            st.error(f"Error creating conversation: {e}")
+        except Exception:
+            friendly_error("Unable to start a new conversation. You can still chat in guest mode.")
+            # Fallback to in‑memory conversation
             st.session_state.messages = [
                 {"role": "system", "content": system_msg_content, "id": str(uuid.uuid4())},
                 opening_assistant_msg
@@ -176,8 +182,8 @@ def delete_conversation(conv_id):
                     load_conversation_messages(st.session_state.current_conv_id)
                 else:
                     create_new_conversation()
-        except Exception as e:
-            st.error(f"Error deleting conversation: {e}")
+        except Exception:
+            friendly_error("Could not delete conversation. It may have been already removed.")
         st.rerun()
 
 def switch_conversation(conv_id):
@@ -189,17 +195,16 @@ def update_conversation_title(conv_id, title):
         try:
             supabase.table("conversations").update({"title": title, "updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
             load_user_conversations()
-        except Exception as e:
-            st.error(f"Error updating title: {e}")
+        except Exception:
+            pass  # Title update is non‑critical
 
 def save_conversation_messages(conv_id, messages_list):
     if st.session_state.auth_user:
         try:
-            # Delete all existing messages for this conversation (except system, but we'll just replace)
             supabase.table("messages").delete().eq("conversation_id", conv_id).execute()
             for msg in messages_list:
                 if msg["role"] == "system":
-                    continue  # system message already handled at creation
+                    continue
                 supabase.table("messages").insert({
                     "conversation_id": conv_id,
                     "role": msg["role"],
@@ -207,8 +212,8 @@ def save_conversation_messages(conv_id, messages_list):
                     "parent_id": msg.get("parent_id")
                 }).execute()
             supabase.table("conversations").update({"updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
-        except Exception as e:
-            st.error(f"Error saving conversation: {e}")
+        except Exception:
+            friendly_error("Your conversation may not have been saved. You can still continue, but progress might be lost on refresh.")
 
 def get_assistant_response(messages_list):
     api_messages = [{"role": m["role"], "content": m["content"]} for m in messages_list if m["role"] != "system"]
@@ -217,13 +222,17 @@ def get_assistant_response(messages_list):
     if system_msg:
         full_messages.append({"role": "system", "content": system_msg["content"]})
     full_messages.extend(api_messages)
-    response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=full_messages,
-        temperature=0.7,
-        max_tokens=500
-    )
-    return response.choices[0].message.content
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=full_messages,
+            temperature=0.7,
+            max_tokens=500
+        )
+        return response.choices[0].message.content
+    except Exception:
+        friendly_error("The AI service is temporarily unavailable. Please try again in a moment.")
+        return "I'm having trouble responding right now. Please refresh or try again later."
 
 # ========== SIDEBAR ==========
 with st.sidebar:
@@ -241,7 +250,7 @@ with st.sidebar:
                 if login_email and login_password:
                     login_user(login_email, login_password)
                 else:
-                    st.warning("Enter email and password")
+                    friendly_error("Please enter both email and password.")
         with tab2:
             signup_email = st.text_input("Email", key="signup_email")
             signup_password = st.text_input("Password", type="password", key="signup_password")
@@ -249,7 +258,7 @@ with st.sidebar:
                 if signup_email and signup_password:
                     signup_user(signup_email, signup_password)
                 else:
-                    st.warning("Enter email and password")
+                    friendly_error("Please enter an email and a password (at least 6 characters).")
 
     st.divider()
     st.markdown("### 📜 Intelligence Log")
