@@ -6,6 +6,7 @@ from supabase import create_client, Client
 import os
 import hashlib
 import json
+import pandas as pd
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
@@ -50,6 +51,7 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 APP_URL = st.secrets.get("APP_URL", "https://anchorpoint-navigator.streamlit.app")
+STEWARD_EMAIL = "davidogunbodede24@gmail.com"
 
 # ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -74,6 +76,8 @@ if "edit_msg_id" not in st.session_state:
     st.session_state.edit_msg_id = None
 if "editing_title_id" not in st.session_state:
     st.session_state.editing_title_id = None
+if "show_observatory" not in st.session_state:
+    st.session_state.show_observatory = False
 
 # ========== HELPER FUNCTIONS ==========
 def friendly_error(user_message: str):
@@ -123,6 +127,7 @@ def logout_user():
     st.session_state.guest_mode = True
     st.session_state.current_conv_id = None
     st.session_state.messages = []
+    st.session_state.show_observatory = False
     st.rerun()
 
 def load_user_conversations():
@@ -324,6 +329,52 @@ Respond with ONLY the JSON object."""
         print(f"Registry save error: {e}")
         return False
 
+def show_observatory():
+    """Render the Observatory dashboard."""
+    st.subheader("🔭 Operational Intelligence Observatory")
+    st.caption("Aggregated insights from all registry entries")
+    
+    try:
+        entries = supabase.table("registry_entries").select("*").execute()
+        df = pd.DataFrame(entries.data)
+        
+        if not df.empty:
+            # Gap type distribution
+            st.subheader("Gap Type Distribution")
+            gap_counts = df['gap_type'].value_counts().reset_index()
+            gap_counts.columns = ['Gap Type', 'Count']
+            st.bar_chart(gap_counts.set_index('Gap Type'))
+            
+            # Top persistence drivers
+            st.subheader("Top Persistence Drivers")
+            driver_counts = df['persistence_driver'].value_counts().head(5).reset_index()
+            driver_counts.columns = ['Driver', 'Count']
+            st.dataframe(driver_counts)
+            
+            # Most referenced assets
+            st.subheader("Most Referenced Assets")
+            asset_counts = df['linked_asset'].value_counts().head(5).reset_index()
+            asset_counts.columns = ['Asset', 'Count']
+            st.dataframe(asset_counts)
+            
+            # Timeline
+            st.subheader("Entries Over Time")
+            df['date'] = pd.to_datetime(df['created_at']).dt.date
+            timeline = df.groupby('date').size().reset_index(name='count')
+            st.line_chart(timeline.set_index('date'))
+            
+            # Raw data toggle (optional)
+            if st.checkbox("Show raw data"):
+                st.dataframe(df)
+        else:
+            st.info("No registry entries yet. Generate summaries to see intelligence.")
+    except Exception as e:
+        st.error(f"Could not load observatory data: {e}")
+    
+    if st.button("← Back to Navigator"):
+        st.session_state.show_observatory = False
+        st.rerun()
+
 # ========== HANDLE SHARED CONVERSATION VIEW ==========
 query_params = st.query_params
 share_token = query_params.get("share")
@@ -341,6 +392,11 @@ if share_token:
     else:
         st.error("Invalid share link.")
         st.stop()
+
+# ========== OBSERVATORY DASHBOARD ==========
+if st.session_state.show_observatory:
+    show_observatory()
+    st.stop()
 
 # ========== SIDEBAR ==========
 with st.sidebar:
@@ -426,16 +482,27 @@ with st.sidebar:
         st.divider()
         st.markdown("### 📋 Registry Intelligence")
         try:
-            entries = supabase.table("registry_entries").select("*").eq("conversation_id", st.session_state.current_conv_id).execute() if st.session_state.current_conv_id else None
-            if entries and entries.data:
-                for entry in entries.data[:3]:
-                    st.caption(f"**{entry['gap_type']}** – {entry['key_insight'][:60]}..." if entry.get('key_insight') else f"**{entry['gap_type']}**")
-                if len(entries.data) > 3:
-                    st.caption("*More entries available*")
+            if st.session_state.current_conv_id:
+                entries = supabase.table("registry_entries").select("*").eq("conversation_id", st.session_state.current_conv_id).execute()
+                if entries.data:
+                    for entry in entries.data[:3]:
+                        st.caption(f"**{entry['gap_type']}** – {entry['key_insight'][:60]}..." if entry.get('key_insight') else f"**{entry['gap_type']}**")
+                    if len(entries.data) > 3:
+                        st.caption("*More entries available*")
+                else:
+                    st.caption("No registry entries yet. Generate a summary to create one.")
             else:
-                st.caption("No registry entries yet. Generate a summary to create one.")
+                st.caption("Select a conversation to see its registry entries.")
         except Exception:
             st.caption("Registry loading...")
+        
+        # Observatory button for steward only
+        if st.session_state.auth_user.email == STEWARD_EMAIL:
+            st.divider()
+            st.markdown("### 🔭 Observatory")
+            if st.button("📊 View Intelligence Dashboard"):
+                st.session_state.show_observatory = True
+                st.rerun()
     else:
         st.info("💡 Sign in to save conversations and contribute to your governance profile.")
         if st.session_state.messages:
