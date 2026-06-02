@@ -51,7 +51,7 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 APP_URL = st.secrets.get("APP_URL", "https://anchorpoint-navigator.streamlit.app")
-STEWARD_EMAIL = "davidogunbodede24@gmail.com"
+STEWARD_EMAIL = "your-email@example.com"  # Replace with your actual email
 
 # ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -283,46 +283,69 @@ def generate_share_token(conv_id):
         supabase.table("conversations").update({"share_token": token}).eq("id", conv_id).execute()
         return token
 
-def save_registry_entry(conv_id, summary_text):
-    """Parse summary and save structured registry entry."""
+def save_registry_entry(conv_id, summary_text, conversation_text):
+    """Parse summary, calculate GAS score and leakage estimate, then save."""
     if not st.session_state.auth_user:
         return False
     
+    # Step 1: Extract structured fields from summary
     extraction_prompt = f"""Extract the following fields from this Anchorpoint Navigator summary. Return ONLY valid JSON, no extra text.
 
 Summary:
 {summary_text}
 
 Required fields:
-- gap_type: one of (E, K, SC, CD, WE) based on the Gap Type section
-- key_insight: the main insight (one sentence)
-- persistence_driver: why the gap persists (from the summary or infer)
-- suggested_action: the recommended first step
-- linked_asset: the relevant Anchorpoint asset mentioned
+- gap_type: one of (E, K, SC, CD, WE)
+- key_insight: one sentence
+- persistence_driver: short phrase
+- suggested_action: short phrase
+- linked_asset: string
 
 Example response:
-{{"gap_type": "SC", "key_insight": "WhatsApp approvals replace formal system when manager is off-site", "persistence_driver": "no delegated authority", "suggested_action": "install a delegated approver rule", "linked_asset": "Nigerian Process Library – WhatsApp Approvals"}}
-
-Respond with ONLY the JSON object."""
+{{"gap_type": "SC", "key_insight": "WhatsApp approvals replace formal system", "persistence_driver": "no delegated authority", "suggested_action": "install delegate rule", "linked_asset": "Nigerian Process Library"}}
+"""
 
     try:
-        response = groq_client.chat.completions.create(
+        resp1 = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": extraction_prompt}],
             temperature=0.2,
             max_tokens=300
         )
-        result = response.choices[0].message.content
+        result = resp1.choices[0].message.content
         result = result.replace("```json", "").replace("```", "").strip()
         data = json.loads(result)
         
+        # Step 2: Quantify GAS and leakage based on full conversation
+        quantification_prompt = f"""Based on this conversation, estimate:
+1. A GAS score (0-100) where 0=chaotic, 100=fully governed. Use: gap type severity (E=70, K=80, SC=40, CD=30, WE=20), persistence driver severity, and user's tone.
+2. An estimated off‑platform approval leakage percentage (0-100).
+
+Return ONLY JSON: {{"gas_score": number, "leakage_estimate": number}}
+
+Conversation:
+{conversation_text}
+"""
+        resp2 = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": quantification_prompt}],
+            temperature=0.2,
+            max_tokens=100
+        )
+        q_result = resp2.choices[0].message.content
+        q_result = q_result.replace("```json", "").replace("```", "").strip()
+        q_data = json.loads(q_result)
+        
+        # Insert into registry_entries
         supabase.table("registry_entries").insert({
             "conversation_id": conv_id,
             "gap_type": data.get("gap_type"),
             "key_insight": data.get("key_insight"),
             "persistence_driver": data.get("persistence_driver"),
             "suggested_action": data.get("suggested_action"),
-            "linked_asset": data.get("linked_asset")
+            "linked_asset": data.get("linked_asset"),
+            "gas_score": q_data.get("gas_score"),
+            "leakage_estimate": q_data.get("leakage_estimate")
         }).execute()
         return True
     except Exception as e:
@@ -330,7 +353,6 @@ Respond with ONLY the JSON object."""
         return False
 
 def show_observatory():
-    """Render the Observatory dashboard."""
     st.subheader("🔭 Operational Intelligence Observatory")
     st.caption("Aggregated insights from all registry entries")
     
@@ -363,7 +385,30 @@ def show_observatory():
             timeline = df.groupby('date').size().reset_index(name='count')
             st.line_chart(timeline.set_index('date'))
             
-            # Raw data toggle (optional)
+            # GAS score distribution (Layer 4)
+            st.subheader("GAS Score Distribution")
+            gas_data = df[df['gas_score'].notna()]
+            if not gas_data.empty:
+                avg_gas = gas_data['gas_score'].mean()
+                st.metric("Average GAS Score", f"{avg_gas:.1f}")
+                # Simple histogram: count per decile
+                gas_data['decile'] = (gas_data['gas_score'] // 10) * 10
+                decile_counts = gas_data['decile'].value_counts().sort_index().reset_index()
+                decile_counts.columns = ['GAS Score Range', 'Count']
+                st.bar_chart(decile_counts.set_index('GAS Score Range'))
+            
+            # Leakage estimate distribution
+            st.subheader("Estimated Off‑platform Leakage")
+            leak_data = df[df['leakage_estimate'].notna()]
+            if not leak_data.empty:
+                avg_leak = leak_data['leakage_estimate'].mean()
+                st.metric("Average Leakage", f"{avg_leak:.1f}%")
+                leak_data['leak_bucket'] = (leak_data['leakage_estimate'] // 10) * 10
+                leak_counts = leak_data['leak_bucket'].value_counts().sort_index().reset_index()
+                leak_counts.columns = ['Leakage % Range', 'Count']
+                st.bar_chart(leak_counts.set_index('Leakage % Range'))
+            
+            # Raw data toggle
             if st.checkbox("Show raw data"):
                 st.dataframe(df)
         else:
@@ -579,7 +624,7 @@ if not st.session_state.edit_msg_id:
                 st.info("💡 You're in guest mode. Create an account to add this conversation to your governance profile.")
         st.rerun()
 
-# Summary generation with registry save
+# Summary generation with registry save (Layer 2 + Layer 4)
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -602,9 +647,9 @@ if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
             st.session_state.summary = summary
             st.session_state.summary_shown = True
             
-            # Save to Registry Intelligence (Layer 2)
+            # Save to Registry Intelligence (Layer 2 + Layer 4)
             if st.session_state.auth_user and st.session_state.current_conv_id:
-                save_registry_entry(st.session_state.current_conv_id, summary)
+                save_registry_entry(st.session_state.current_conv_id, summary, conv_text)
             
             st.rerun()
 
@@ -617,7 +662,7 @@ if "summary" in st.session_state:
         file_name=f"anchorpoint_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
         mime="text/plain",
     )
-    st.caption("This diagnostic is a field log entry and has been saved to your Registry Intelligence.")
+    st.caption("This diagnostic is a field log entry and has been saved to your Registry Intelligence with a GAS score and leakage estimate.")
     if st.button("Start new conversation"):
         create_new_conversation()
         del st.session_state.summary
