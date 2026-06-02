@@ -4,41 +4,29 @@ from datetime import datetime
 from groq import Groq
 from supabase import create_client, Client
 import os
+import hashlib
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
-# ========== BRANDING (CSS with readable backgrounds) ==========
+# ========== BRANDING CSS ==========
 st.markdown("""
 <style>
-    /* Main app background – light gray for contrast */
     .stApp { background-color: #e9ecef; }
-    
-    /* Sidebar stays branded */
     [data-testid="stSidebar"] {
         background-color: #1a3e60;
         padding-top: 2rem;
     }
     [data-testid="stSidebar"] * { color: #ffffff !important; }
     [data-testid="stSidebar"] button:hover { background-color: #2c5a7a !important; }
-    
-    /* Headers and text */
     h1, h2, h3, .stMarkdown, .stCaption { color: #1a3e60; }
-    
-    /* Links */
     a { color: #d4af37; }
-    
-    /* Buttons */
     .stButton button {
         background-color: #1a3e60;
         color: white;
         border-radius: 8px;
     }
     .stButton button:hover { background-color: #2c5a7a; }
-    
-    /* Info/Warning boxes */
     .stAlert { border-left-color: #d4af37; }
-    
-    /* Chat messages – clearly visible */
     [data-testid="stChatMessage"] {
         background-color: #ffffff !important;
         color: #111111 !important;
@@ -47,7 +35,6 @@ st.markdown("""
         margin-bottom: 8px;
         box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     }
-    /* Slight variation for assistant messages */
     [data-testid="stChatMessage"][data-testid*="assistant"] {
         background-color: #f8f9fa !important;
     }
@@ -61,6 +48,7 @@ st.caption("Diagnosing operational gaps. Stewarding certainty.")
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+APP_URL = st.secrets.get("APP_URL", "https://anchorpoint-navigator.streamlit.app")  # fallback
 
 # ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -86,11 +74,10 @@ if "edit_msg_id" not in st.session_state:
 if "editing_title_id" not in st.session_state:
     st.session_state.editing_title_id = None
 
-# ========== FRIENDLY ERROR HELPER ==========
+# ========== HELPER FUNCTIONS ==========
 def friendly_error(user_message: str):
     st.error(f"⚠️ {user_message}")
 
-# ========== AUTH HELPERS ==========
 def login_user(email, password):
     try:
         resp = supabase.auth.sign_in_with_password({"email": email, "password": password})
@@ -281,12 +268,38 @@ def get_assistant_response(messages_list):
         friendly_error("The AI service is temporarily unavailable. Please try again in a moment.")
         return "I'm having trouble responding right now. Please refresh or try again later."
 
+def generate_share_token(conv_id):
+    resp = supabase.table("conversations").select("share_token").eq("id", conv_id).execute()
+    if resp.data and resp.data[0].get("share_token"):
+        return resp.data[0]["share_token"]
+    else:
+        token = hashlib.sha256(f"{conv_id}{uuid.uuid4()}".encode()).hexdigest()[:16]
+        supabase.table("conversations").update({"share_token": token}).eq("id", conv_id).execute()
+        return token
+
+# ========== HANDLE SHARED CONVERSATION VIEW ==========
+query_params = st.query_params
+share_token = query_params.get("share")
+if share_token:
+    conv_resp = supabase.table("conversations").select("id").eq("share_token", share_token).execute()
+    if conv_resp.data:
+        conv_id = conv_resp.data[0]["id"]
+        msgs_resp = supabase.table("messages").select("*").eq("conversation_id", conv_id).order("created_at", asc=True).execute()
+        st.subheader("📄 Shared Conversation (Read-Only)")
+        for msg in msgs_resp.data:
+            if msg["role"] != "system":
+                st.chat_message(msg["role"]).write(msg["content"])
+        st.caption("This is a read-only view. To continue the conversation, please sign in.")
+        st.stop()
+    else:
+        st.error("Invalid share link.")
+        st.stop()
+
 # ========== SIDEBAR ==========
 with st.sidebar:
-    # ----- LOGO (anchorpoint_logo.jpeg) -----
     st.image("https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_logo.jpeg", use_container_width=True)
     st.markdown("---")
-    
+
     if st.session_state.auth_user:
         st.write(f"👤 {st.session_state.auth_user.email}")
         if st.button("Logout"):
@@ -295,6 +308,7 @@ with st.sidebar:
         st.markdown("### 🔐 Account")
         tab1, tab2 = st.tabs(["Login", "Sign up"])
         with tab1:
+            st.markdown("**Email / Password**")
             login_email = st.text_input("Email", key="login_email")
             login_password = st.text_input("Password", type="password", key="login_password")
             if st.button("Login", key="login_btn"):
@@ -302,6 +316,12 @@ with st.sidebar:
                     login_user(login_email, login_password)
                 else:
                     friendly_error("Please enter both email and password.")
+            st.markdown("---")
+            st.markdown("**Or continue with**")
+            auth_url = supabase.auth.sign_in_with_oauth(
+                {"provider": "google", "options": {"redirect_to": APP_URL}}
+            ).url
+            st.link_button("🔐 Continue with Google", url=auth_url)
         with tab2:
             signup_email = st.text_input("Email", key="signup_email")
             signup_password = st.text_input("Password", type="password", key="signup_password")
@@ -320,9 +340,8 @@ with st.sidebar:
         for conv in st.session_state.conversations_list:
             conv_id = conv["id"]
             is_editing = (st.session_state.editing_title_id == conv_id)
-            
-            col1, col2 = st.columns([0.85, 0.15])
-            with col1:
+            cols = st.columns([0.6, 0.15, 0.15, 0.1])
+            with cols[0]:
                 if is_editing:
                     new_title = st.text_input("Title", value=conv["title"], key=f"edit_title_{conv_id}", label_visibility="collapsed")
                     if st.button("💾 Save", key=f"save_title_{conv_id}"):
@@ -336,16 +355,25 @@ with st.sidebar:
                         st.session_state.editing_title_id = None
                         st.rerun()
                 else:
-                    display_title = conv["title"][:35] + ("..." if len(conv["title"]) > 35 else "")
+                    display_title = conv["title"][:30] + ("..." if len(conv["title"]) > 30 else "")
                     if st.button(display_title, key=f"conv_{conv_id}", use_container_width=True):
                         switch_conversation(conv_id)
-            with col2:
+            with cols[1]:
                 if not is_editing:
                     if st.button("✏️", key=f"rename_{conv_id}"):
                         st.session_state.editing_title_id = conv_id
                         st.rerun()
-                if st.button("🗑️", key=f"del_{conv_id}"):
-                    delete_conversation(conv_id)
+            with cols[2]:
+                if not is_editing:
+                    if st.button("🔗", key=f"share_{conv_id}"):
+                        token = generate_share_token(conv_id)
+                        share_url = f"{APP_URL}?share={token}"
+                        st.info(f"Shareable link: {share_url}")
+                        st.code(share_url, language="text")
+            with cols[3]:
+                if not is_editing:
+                    if st.button("🗑️", key=f"del_{conv_id}"):
+                        delete_conversation(conv_id)
             st.caption(conv.get("updated_at", conv["created_at"])[:10])
     else:
         st.info("💡 Sign in to save conversations and contribute to your governance profile.")
@@ -368,7 +396,7 @@ else:
         create_new_conversation()
         st.rerun()
 
-# Edit modal (for message content)
+# Edit modal
 if st.session_state.edit_msg_id:
     msg_to_edit = next((m for m in st.session_state.messages if m.get("id") == st.session_state.edit_msg_id), None)
     if msg_to_edit:
@@ -423,7 +451,7 @@ if not st.session_state.edit_msg_id:
                 st.info("💡 You're in guest mode. Create an account to add this conversation to your governance profile.")
         st.rerun()
 
-# ========== SUMMARY GENERATION WITH DOWNLOAD BUTTON ==========
+# Summary generation with download
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -450,17 +478,13 @@ if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
 if "summary" in st.session_state:
     st.success("Summary generated – screenshot or download below:")
     st.markdown(st.session_state.summary)
-    
-    # Download button for .txt file
-    summary_text = st.session_state.summary
     st.download_button(
         label="📥 Download Summary (.txt)",
-        data=summary_text,
+        data=st.session_state.summary,
         file_name=f"anchorpoint_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
         mime="text/plain",
     )
-    
-    st.caption("📸 Screenshot or download above. This diagnostic is a field log entry and can inform your Governance Adoption Score (GAS).")
+    st.caption("This diagnostic is a field log entry and can inform your Governance Adoption Score (GAS).")
     if st.button("Start new conversation"):
         create_new_conversation()
         del st.session_state.summary
