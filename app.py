@@ -7,6 +7,7 @@ import os
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
+# Branding
 st.title("⚓ Anchorpoint AI Navigator")
 st.caption("Diagnosing operational gaps. Stewarding certainty.")
 
@@ -78,8 +79,7 @@ def ensure_profile_exists():
                 "full_name": st.session_state.auth_user.user_metadata.get("full_name", "")
             }).execute()
     except Exception:
-        # Non‑critical; profile will be created on first conversation save
-        pass
+        pass  # Non‑critical; profile will be created on first conversation save
 
 def logout_user():
     supabase.auth.sign_out()
@@ -157,7 +157,6 @@ def create_new_conversation():
             load_user_conversations()
         except Exception:
             friendly_error("Unable to start a new conversation. You can still chat in guest mode.")
-            # Fallback to in‑memory conversation
             st.session_state.messages = [
                 {"role": "system", "content": system_msg_content, "id": str(uuid.uuid4())},
                 opening_assistant_msg
