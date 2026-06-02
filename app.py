@@ -5,6 +5,7 @@ from groq import Groq
 from supabase import create_client, Client
 import os
 import hashlib
+import json
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
@@ -48,7 +49,7 @@ st.caption("Diagnosing operational gaps. Stewarding certainty.")
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-APP_URL = st.secrets.get("APP_URL", "https://anchorpoint-navigator.streamlit.app")  # fallback
+APP_URL = st.secrets.get("APP_URL", "https://anchorpoint-navigator.streamlit.app")
 
 # ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -277,6 +278,52 @@ def generate_share_token(conv_id):
         supabase.table("conversations").update({"share_token": token}).eq("id", conv_id).execute()
         return token
 
+def save_registry_entry(conv_id, summary_text):
+    """Parse summary and save structured registry entry."""
+    if not st.session_state.auth_user:
+        return False
+    
+    extraction_prompt = f"""Extract the following fields from this Anchorpoint Navigator summary. Return ONLY valid JSON, no extra text.
+
+Summary:
+{summary_text}
+
+Required fields:
+- gap_type: one of (E, K, SC, CD, WE) based on the Gap Type section
+- key_insight: the main insight (one sentence)
+- persistence_driver: why the gap persists (from the summary or infer)
+- suggested_action: the recommended first step
+- linked_asset: the relevant Anchorpoint asset mentioned
+
+Example response:
+{{"gap_type": "SC", "key_insight": "WhatsApp approvals replace formal system when manager is off-site", "persistence_driver": "no delegated authority", "suggested_action": "install a delegated approver rule", "linked_asset": "Nigerian Process Library – WhatsApp Approvals"}}
+
+Respond with ONLY the JSON object."""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": extraction_prompt}],
+            temperature=0.2,
+            max_tokens=300
+        )
+        result = response.choices[0].message.content
+        result = result.replace("```json", "").replace("```", "").strip()
+        data = json.loads(result)
+        
+        supabase.table("registry_entries").insert({
+            "conversation_id": conv_id,
+            "gap_type": data.get("gap_type"),
+            "key_insight": data.get("key_insight"),
+            "persistence_driver": data.get("persistence_driver"),
+            "suggested_action": data.get("suggested_action"),
+            "linked_asset": data.get("linked_asset")
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"Registry save error: {e}")
+        return False
+
 # ========== HANDLE SHARED CONVERSATION VIEW ==========
 query_params = st.query_params
 share_token = query_params.get("share")
@@ -375,6 +422,20 @@ with st.sidebar:
                     if st.button("🗑️", key=f"del_{conv_id}"):
                         delete_conversation(conv_id)
             st.caption(conv.get("updated_at", conv["created_at"])[:10])
+
+        st.divider()
+        st.markdown("### 📋 Registry Intelligence")
+        try:
+            entries = supabase.table("registry_entries").select("*").eq("conversation_id", st.session_state.current_conv_id).execute() if st.session_state.current_conv_id else None
+            if entries and entries.data:
+                for entry in entries.data[:3]:
+                    st.caption(f"**{entry['gap_type']}** – {entry['key_insight'][:60]}..." if entry.get('key_insight') else f"**{entry['gap_type']}**")
+                if len(entries.data) > 3:
+                    st.caption("*More entries available*")
+            else:
+                st.caption("No registry entries yet. Generate a summary to create one.")
+        except Exception:
+            st.caption("Registry loading...")
     else:
         st.info("💡 Sign in to save conversations and contribute to your governance profile.")
         if st.session_state.messages:
@@ -451,7 +512,7 @@ if not st.session_state.edit_msg_id:
                 st.info("💡 You're in guest mode. Create an account to add this conversation to your governance profile.")
         st.rerun()
 
-# Summary generation with download
+# Summary generation with registry save
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -473,6 +534,11 @@ if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
             summary = summary_response.choices[0].message.content
             st.session_state.summary = summary
             st.session_state.summary_shown = True
+            
+            # Save to Registry Intelligence (Layer 2)
+            if st.session_state.auth_user and st.session_state.current_conv_id:
+                save_registry_entry(st.session_state.current_conv_id, summary)
+            
             st.rerun()
 
 if "summary" in st.session_state:
@@ -484,7 +550,7 @@ if "summary" in st.session_state:
         file_name=f"anchorpoint_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
         mime="text/plain",
     )
-    st.caption("This diagnostic is a field log entry and can inform your Governance Adoption Score (GAS).")
+    st.caption("This diagnostic is a field log entry and has been saved to your Registry Intelligence.")
     if st.button("Start new conversation"):
         create_new_conversation()
         del st.session_state.summary
