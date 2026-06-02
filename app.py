@@ -19,7 +19,9 @@ st.markdown("""
     [data-testid="stSidebar"] button:hover { background-color: #2c5a7a !important; }
     h1, h2, h3 { color: #1a3e60; }
     a { color: #d4af37; }
-    [data-testid="stChatMessage"]:nth-child(odd) { background-color: #e6f0fa; }
+    /* No custom chat message background – using Streamlit default.
+       To use teal instead, uncomment the line below: */
+    /* [data-testid="stChatMessage"] { background-color: #e0f2f1; border-radius: 12px; padding: 8px; } */
     .stButton button {
         background-color: #1a3e60;
         color: white;
