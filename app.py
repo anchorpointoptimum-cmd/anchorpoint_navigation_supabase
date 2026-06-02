@@ -47,7 +47,7 @@ st.markdown("""
         margin-bottom: 8px;
         box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     }
-    /* Slight variation for assistant messages (optional) */
+    /* Slight variation for assistant messages */
     [data-testid="stChatMessage"][data-testid*="assistant"] {
         background-color: #f8f9fa !important;
     }
@@ -423,7 +423,7 @@ if not st.session_state.edit_msg_id:
                 st.info("💡 You're in guest mode. Create an account to add this conversation to your governance profile.")
         st.rerun()
 
-# Summary generation
+# ========== SUMMARY GENERATION WITH DOWNLOAD BUTTON ==========
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -448,9 +448,19 @@ if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
             st.rerun()
 
 if "summary" in st.session_state:
-    st.success("Summary generated – screenshot or copy below:")
+    st.success("Summary generated – screenshot or download below:")
     st.markdown(st.session_state.summary)
-    st.caption("📸 Screenshot this to share with your team. This diagnostic is a field log entry and can inform your Governance Adoption Score (GAS).")
+    
+    # Download button for .txt file
+    summary_text = st.session_state.summary
+    st.download_button(
+        label="📥 Download Summary (.txt)",
+        data=summary_text,
+        file_name=f"anchorpoint_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+        mime="text/plain",
+    )
+    
+    st.caption("📸 Screenshot or download above. This diagnostic is a field log entry and can inform your Governance Adoption Score (GAS).")
     if st.button("Start new conversation"):
         create_new_conversation()
         del st.session_state.summary
