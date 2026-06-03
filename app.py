@@ -51,8 +51,7 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 APP_URL = st.secrets.get("APP_URL", "https://anchorpointnavigationsupabase-lq5rflwrxgztuq8awnpqx5.streamlit.app")
-STEWARD_EMAIL = "anchorpointoptimum@gmail.com"
-
+STEWARD_EMAIL = "anchorpointoptimum@gmail.com" 
 # ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -85,12 +84,28 @@ if "user_orgs" not in st.session_state:
 if "org_role" not in st.session_state:
     st.session_state.org_role = None
 
-# ========== INVITE HANDLER (must be before UI) ==========
+# ========== RESTORE SESSION FROM COOKIE (FIX REFRESH) ==========
+if not st.session_state.auth_user:
+    try:
+        session = supabase.auth.get_session()
+        if session and session.user:
+            st.session_state.auth_user = session.user
+            st.session_state.guest_mode = False
+            ensure_profile_exists()
+            load_user_organizations()
+            if st.session_state.user_orgs and not st.session_state.current_org_id:
+                st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
+                st.session_state.org_role = st.session_state.user_orgs[0]["role"]
+                load_user_conversations()
+            st.rerun()
+    except Exception:
+        pass
+
+# ========== INVITE HANDLER ==========
 query_params = st.query_params
 accept_token = query_params.get("accept_invite")
 if accept_token:
     if st.session_state.auth_user:
-        # Process invite
         try:
             resp = supabase.table("invites").select("*").eq("token", accept_token).eq("used_at", None).gt("expires_at", datetime.now().isoformat()).execute()
             if not resp.data:
@@ -103,8 +118,7 @@ if accept_token:
                     "role": invite["role"]
                 }).execute()
                 supabase.table("invites").update({"used_at": datetime.now().isoformat()}).eq("token", accept_token).execute()
-                st.success(f"You have been added to the organization. Reloading...")
-                # Clear the query parameter and reload
+                st.success("You have been added to the organization. Refreshing...")
                 st.query_params.clear()
                 st.rerun()
         except Exception as e:
@@ -116,37 +130,6 @@ if accept_token:
 # ========== HELPER FUNCTIONS ==========
 def friendly_error(user_message: str):
     st.error(f"⚠️ {user_message}")
-
-def login_user(email, password):
-    try:
-        resp = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        st.session_state.auth_user = resp.user
-        st.session_state.guest_mode = False
-        ensure_profile_exists()
-        load_user_organizations()
-        if st.session_state.user_orgs:
-            if not st.session_state.current_org_id:
-                st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
-                st.session_state.org_role = st.session_state.user_orgs[0]["role"]
-            load_user_conversations()
-        else:
-            st.session_state.current_org_id = None
-        return True
-    except Exception:
-        friendly_error("Unable to sign in. Check your email and password, then try again.")
-        return False
-
-def signup_user(email, password):
-    try:
-        resp = supabase.auth.sign_up({"email": email, "password": password})
-        st.session_state.auth_user = resp.user
-        st.session_state.guest_mode = False
-        ensure_profile_exists()
-        load_user_organizations()
-        return True
-    except Exception:
-        friendly_error("Signup failed. The email may already be registered, or the password is too weak.")
-        return False
 
 def ensure_profile_exists():
     if not st.session_state.auth_user:
@@ -161,18 +144,6 @@ def ensure_profile_exists():
             }).execute()
     except Exception:
         pass
-
-def logout_user():
-    supabase.auth.sign_out()
-    st.session_state.auth_user = None
-    st.session_state.guest_mode = True
-    st.session_state.current_conv_id = None
-    st.session_state.messages = []
-    st.session_state.show_observatory = False
-    st.session_state.current_org_id = None
-    st.session_state.user_orgs = []
-    st.session_state.org_role = None
-    st.rerun()
 
 def load_user_organizations():
     if not st.session_state.auth_user:
@@ -194,40 +165,6 @@ def load_user_organizations():
     except Exception:
         st.session_state.user_orgs = []
 
-def create_organization(name, slug):
-    if not st.session_state.auth_user:
-        return False
-    try:
-        resp = supabase.table("organizations").insert({
-            "name": name,
-            "slug": slug,
-            "created_by": st.session_state.auth_user.id
-        }).execute()
-        org_id = resp.data[0]["id"]
-        supabase.table("organization_members").insert({
-            "organization_id": org_id,
-            "user_id": st.session_state.auth_user.id,
-            "role": "admin"
-        }).execute()
-        load_user_organizations()
-        st.session_state.current_org_id = org_id
-        st.session_state.org_role = "admin"
-        return True
-    except Exception as e:
-        friendly_error(f"Could not create organization: {e}")
-        return False
-
-def switch_organization(org_id):
-    st.session_state.current_org_id = org_id
-    for org in st.session_state.user_orgs:
-        if org["id"] == org_id:
-            st.session_state.org_role = org["role"]
-            break
-    st.session_state.current_conv_id = None
-    st.session_state.messages = []
-    load_user_conversations()
-    st.rerun()
-
 def load_user_conversations():
     if not st.session_state.auth_user or not st.session_state.current_org_id:
         return
@@ -239,8 +176,8 @@ def load_user_conversations():
             load_conversation_messages(st.session_state.current_conv_id)
         elif not st.session_state.conversations_list:
             create_new_conversation()
-    except Exception:
-        friendly_error("Could not load your conversation history. Refresh the page.")
+    except Exception as e:
+        st.error(f"Error loading conversations: {e}")
         st.session_state.conversations_list = []
 
 def load_conversation_messages(conv_id):
@@ -252,8 +189,8 @@ def load_conversation_messages(conv_id):
             messages.insert(0, system_msg)
         st.session_state.messages = messages
         st.session_state.current_conv_id = conv_id
-    except Exception:
-        friendly_error("Unable to load conversation. Please try refreshing.")
+    except Exception as e:
+        st.error(f"Unable to load conversation: {e}")
 
 def create_new_conversation():
     system_msg_content = system_content + "\n\nRemember: You are a Navigator. Lead with questions."
@@ -295,8 +232,9 @@ def create_new_conversation():
             ]
             st.session_state.current_conv_id = conv_id
             load_user_conversations()
-        except Exception:
-            friendly_error("Unable to start a new conversation. You can still chat in guest mode.")
+        except Exception as e:
+            st.error(f"Unable to start a new conversation: {e}")
+            # Fallback to in‑memory conversation
             st.session_state.messages = [
                 {"role": "system", "content": system_msg_content, "id": str(uuid.uuid4())},
                 opening_assistant_msg
@@ -322,7 +260,7 @@ def delete_conversation(conv_id):
                 else:
                     create_new_conversation()
         except Exception:
-            friendly_error("Could not delete conversation. It may have been already removed.")
+            st.error("Could not delete conversation. It may have been already removed.")
         st.rerun()
 
 def switch_conversation(conv_id):
@@ -335,7 +273,7 @@ def update_conversation_title(conv_id, title):
             supabase.table("conversations").update({"title": title, "updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
             load_user_conversations()
         except Exception:
-            friendly_error("Could not update title.")
+            st.error("Could not update title.")
 
 def save_conversation_messages(conv_id, messages_list):
     if st.session_state.auth_user:
@@ -352,7 +290,7 @@ def save_conversation_messages(conv_id, messages_list):
                 }).execute()
             supabase.table("conversations").update({"updated_at": datetime.now().isoformat()}).eq("id", conv_id).execute()
         except Exception:
-            friendly_error("Your conversation may not have been saved. You can still continue, but progress might be lost on refresh.")
+            st.error("Your conversation may not have been saved. You can still continue, but progress might be lost on refresh.")
 
 def get_assistant_response(messages_list):
     api_messages = [{"role": m["role"], "content": m["content"]} for m in messages_list if m["role"] != "system"]
@@ -447,6 +385,59 @@ Conversation:
         print(f"Registry save error: {e}")
         return False
 
+def login_user(email, password):
+    try:
+        resp = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        st.session_state.auth_user = resp.user
+        st.session_state.guest_mode = False
+        ensure_profile_exists()
+        load_user_organizations()
+        if st.session_state.user_orgs:
+            st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
+            st.session_state.org_role = st.session_state.user_orgs[0]["role"]
+            load_user_conversations()
+        st.rerun()
+        return True
+    except Exception as e:
+        st.error(f"Login failed: {e}")
+        return False
+
+def signup_user(email, password):
+    try:
+        resp = supabase.auth.sign_up({"email": email, "password": password})
+        st.session_state.auth_user = resp.user
+        st.session_state.guest_mode = False
+        ensure_profile_exists()
+        load_user_organizations()
+        st.rerun()
+        return True
+    except Exception as e:
+        st.error(f"Signup failed: {e}")
+        return False
+
+def logout_user():
+    supabase.auth.sign_out()
+    st.session_state.auth_user = None
+    st.session_state.guest_mode = True
+    st.session_state.current_conv_id = None
+    st.session_state.messages = []
+    st.session_state.show_observatory = False
+    st.session_state.current_org_id = None
+    st.session_state.user_orgs = []
+    st.session_state.org_role = None
+    st.rerun()
+
+def switch_organization(org_id):
+    st.session_state.current_org_id = org_id
+    for org in st.session_state.user_orgs:
+        if org["id"] == org_id:
+            st.session_state.org_role = org["role"]
+            break
+    st.session_state.current_conv_id = None
+    st.session_state.messages = []
+    load_user_conversations()
+    st.rerun()
+
 def create_invite(org_id, email, role):
     token = hashlib.sha256(f"{org_id}{email}{uuid.uuid4()}".encode()).hexdigest()[:32]
     supabase.table("invites").insert({
@@ -456,6 +447,30 @@ def create_invite(org_id, email, role):
         "token": token
     }).execute()
     return f"{APP_URL}?accept_invite={token}"
+
+def create_organization(name, slug):
+    if not st.session_state.auth_user:
+        return False
+    try:
+        resp = supabase.table("organizations").insert({
+            "name": name,
+            "slug": slug,
+            "created_by": st.session_state.auth_user.id
+        }).execute()
+        org_id = resp.data[0]["id"]
+        supabase.table("organization_members").insert({
+            "organization_id": org_id,
+            "user_id": st.session_state.auth_user.id,
+            "role": "admin"
+        }).execute()
+        load_user_organizations()
+        st.session_state.current_org_id = org_id
+        st.session_state.org_role = "admin"
+        load_user_conversations()
+        return True
+    except Exception as e:
+        st.error(f"Could not create organization: {e}")
+        return False
 
 def show_observatory():
     st.subheader("🔭 Operational Intelligence Observatory")
@@ -553,7 +568,6 @@ with st.sidebar:
     if st.session_state.auth_user:
         st.write(f"👤 {st.session_state.auth_user.email}")
         
-        # Organization switcher / creator
         if st.session_state.user_orgs:
             org_names = {org["id"]: f"{org['name']} ({org['role']})" for org in st.session_state.user_orgs}
             selected_org_id = st.selectbox(
@@ -575,9 +589,8 @@ with st.sidebar:
                 if org_name and org_slug:
                     create_organization(org_name, org_slug)
                 else:
-                    friendly_error("Please enter both name and slug.")
+                    st.error("Please enter both name and slug.")
         
-        # Invite member section (only for admins)
         if st.session_state.org_role == 'admin' and st.session_state.current_org_id:
             with st.expander("👥 Invite member"):
                 invite_email = st.text_input("Email address")
@@ -588,7 +601,7 @@ with st.sidebar:
                         st.success(f"Invite link (send to {invite_email}):")
                         st.code(link, language="text")
                     else:
-                        friendly_error("Please enter an email.")
+                        st.error("Please enter an email.")
         
         if st.button("Logout"):
             logout_user()
@@ -603,7 +616,7 @@ with st.sidebar:
                 if login_email and login_password:
                     login_user(login_email, login_password)
                 else:
-                    friendly_error("Please enter both email and password.")
+                    st.error("Please enter both email and password.")
             st.markdown("---")
             st.markdown("**Or continue with**")
             auth_url = supabase.auth.sign_in_with_oauth(
@@ -617,7 +630,7 @@ with st.sidebar:
                 if signup_email and signup_password:
                     signup_user(signup_email, signup_password)
                 else:
-                    friendly_error("Please enter an email and a password (at least 6 characters).")
+                    st.error("Please enter an email and a password (at least 6 characters).")
 
     st.divider()
     st.markdown("### 📜 Intelligence Log")
@@ -638,7 +651,7 @@ with st.sidebar:
                             st.session_state.editing_title_id = None
                             st.rerun()
                         else:
-                            friendly_error("Title cannot be empty.")
+                            st.error("Title cannot be empty.")
                     if st.button("Cancel", key=f"cancel_title_{conv_id}"):
                         st.session_state.editing_title_id = None
                         st.rerun()
@@ -681,7 +694,6 @@ with st.sidebar:
         except Exception:
             st.caption("Registry loading...")
         
-        # Observatory button (only for members/admins)
         if st.session_state.org_role in ['admin', 'member']:
             st.divider()
             st.markdown("### 🔭 Observatory")
