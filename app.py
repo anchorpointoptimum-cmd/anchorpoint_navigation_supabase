@@ -8,7 +8,7 @@ import os
 import json
 import pandas as pd
 
-# ========== PASSWORD PROTECTION (BASIC AUTH) ==========
+# ========== PASSWORD PROTECTION ==========
 def check_password():
     """Returns True if the user enters the correct password."""
     def password_entered():
@@ -29,7 +29,6 @@ def check_password():
         return True
 
 check_password()
-# ========== END PASSWORD PROTECTION ==========
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
@@ -66,7 +65,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚓ Anchorpoint AI Navigator")
+# ========== MAIN HEADER WITH LOGO ==========
+# Logo (replace filename if needed)
+logo_url = "https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_logo.jpeg"
+st.image(logo_url, width=150)
+st.title("Anchorpoint AI Navigator")
 st.caption("Diagnosing operational gaps. Stewarding certainty.")
 
 # ========== LOAD SECRETS ==========
@@ -121,6 +124,8 @@ if not st.session_state.auth_user:
                 st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
                 st.session_state.org_role = st.session_state.user_orgs[0]["role"]
                 load_user_conversations()
+                if st.session_state.current_conv_id is None:
+                    create_new_conversation()
             st.rerun()
     except Exception:
         pass
@@ -419,6 +424,8 @@ def login_user(email, password):
             st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
             st.session_state.org_role = st.session_state.user_orgs[0]["role"]
             load_user_conversations()
+            if st.session_state.current_conv_id is None:
+                create_new_conversation()
         st.rerun()
         return True
     except Exception as e:
@@ -585,7 +592,7 @@ if st.session_state.show_observatory:
 
 # ========== SIDEBAR ==========
 with st.sidebar:
-    st.image("https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_logo.jpeg", use_container_width=True)
+    st.image(logo_url, use_container_width=True)
     st.markdown("---")
 
     if st.session_state.auth_user:
