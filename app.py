@@ -1,12 +1,35 @@
 import streamlit as st
+import hashlib
 import uuid
 from datetime import datetime
 from groq import Groq
 from supabase import create_client, Client
 import os
-import hashlib
 import json
 import pandas as pd
+
+# ========== PASSWORD PROTECTION (BASIC AUTH) ==========
+def check_password():
+    """Returns True if the user enters the correct password."""
+    def password_entered():
+        if hashlib.sha256(st.session_state["password"].encode()).hexdigest() == st.secrets["password_hash"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("Enter password", type="password", on_change=password_entered, key="password")
+        st.stop()
+    elif not st.session_state["password_correct"]:
+        st.text_input("Enter password", type="password", on_change=password_entered, key="password")
+        st.error("Incorrect password")
+        st.stop()
+    else:
+        return True
+
+check_password()
+# ========== END PASSWORD PROTECTION ==========
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
@@ -235,7 +258,6 @@ def create_new_conversation():
             load_user_conversations()
         except Exception as e:
             st.error(f"Unable to start a new conversation: {e}")
-            # Fallback to in‑memory conversation
             st.session_state.messages = [
                 {"role": "system", "content": system_msg_content, "id": str(uuid.uuid4())},
                 opening_assistant_msg
