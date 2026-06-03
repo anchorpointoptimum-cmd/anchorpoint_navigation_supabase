@@ -50,8 +50,8 @@ st.caption("Diagnosing operational gaps. Stewarding certainty.")
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-APP_URL = st.secrets.get("APP_URL", "https://anchorpoint-navigator.streamlit.app")
-STEWARD_EMAIL = "anchorpointoptimum@gmail.com"  # Replace with your email
+APP_URL = st.secrets.get("APP_URL", "https://anchorpointnavigationsupabase-lq5rflwrxgztuq8awnpqx5.streamlit.app")
+STEWARD_EMAIL = "anchorpointoptimum@gmail.com"
 
 # ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -85,6 +85,34 @@ if "user_orgs" not in st.session_state:
 if "org_role" not in st.session_state:
     st.session_state.org_role = None
 
+# ========== INVITE HANDLER (must be before UI) ==========
+query_params = st.query_params
+accept_token = query_params.get("accept_invite")
+if accept_token:
+    if st.session_state.auth_user:
+        # Process invite
+        try:
+            resp = supabase.table("invites").select("*").eq("token", accept_token).eq("used_at", None).gt("expires_at", datetime.now().isoformat()).execute()
+            if not resp.data:
+                st.error("Invalid or expired invite link.")
+            else:
+                invite = resp.data[0]
+                supabase.table("organization_members").insert({
+                    "organization_id": invite["organization_id"],
+                    "user_id": st.session_state.auth_user.id,
+                    "role": invite["role"]
+                }).execute()
+                supabase.table("invites").update({"used_at": datetime.now().isoformat()}).eq("token", accept_token).execute()
+                st.success(f"You have been added to the organization. Reloading...")
+                # Clear the query parameter and reload
+                st.query_params.clear()
+                st.rerun()
+        except Exception as e:
+            st.error(f"Could not accept invite: {e}")
+    else:
+        st.warning("Please log in to accept the invitation.")
+        st.stop()
+
 # ========== HELPER FUNCTIONS ==========
 def friendly_error(user_message: str):
     st.error(f"⚠️ {user_message}")
@@ -97,13 +125,11 @@ def login_user(email, password):
         ensure_profile_exists()
         load_user_organizations()
         if st.session_state.user_orgs:
-            # If no current org, select first
             if not st.session_state.current_org_id:
                 st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
                 st.session_state.org_role = st.session_state.user_orgs[0]["role"]
             load_user_conversations()
         else:
-            # No orgs yet – show create org UI
             st.session_state.current_org_id = None
         return True
     except Exception:
@@ -116,7 +142,6 @@ def signup_user(email, password):
         st.session_state.auth_user = resp.user
         st.session_state.guest_mode = False
         ensure_profile_exists()
-        # No organizations initially; user must create or be invited
         load_user_organizations()
         return True
     except Exception:
@@ -173,14 +198,12 @@ def create_organization(name, slug):
     if not st.session_state.auth_user:
         return False
     try:
-        # Create organization
         resp = supabase.table("organizations").insert({
             "name": name,
             "slug": slug,
             "created_by": st.session_state.auth_user.id
         }).execute()
         org_id = resp.data[0]["id"]
-        # Add creator as admin
         supabase.table("organization_members").insert({
             "organization_id": org_id,
             "user_id": st.session_state.auth_user.id,
@@ -200,7 +223,6 @@ def switch_organization(org_id):
         if org["id"] == org_id:
             st.session_state.org_role = org["role"]
             break
-    # Clear current conversation and reload
     st.session_state.current_conv_id = None
     st.session_state.messages = []
     load_user_conversations()
@@ -425,9 +447,19 @@ Conversation:
         print(f"Registry save error: {e}")
         return False
 
+def create_invite(org_id, email, role):
+    token = hashlib.sha256(f"{org_id}{email}{uuid.uuid4()}".encode()).hexdigest()[:32]
+    supabase.table("invites").insert({
+        "organization_id": org_id,
+        "email": email,
+        "role": role,
+        "token": token
+    }).execute()
+    return f"{APP_URL}?accept_invite={token}"
+
 def show_observatory():
     st.subheader("🔭 Operational Intelligence Observatory")
-    st.caption(f"Aggregated insights for organization: {st.session_state.current_org_id}")
+    st.caption(f"Aggregated insights for current organization")
     if st.session_state.org_role not in ['admin', 'member']:
         st.warning("You do not have permission to view the Observatory for this organization.")
         if st.button("← Back to Navigator"):
@@ -491,10 +523,9 @@ def show_observatory():
         st.session_state.show_observatory = False
         st.rerun()
 
-# ========== HANDLE SHARED CONVERSATION VIEW ==========
-query_params = st.query_params
+# ========== SHARED CONVERSATION VIEW ==========
 share_token = query_params.get("share")
-if share_token:
+if share_token and not accept_token:
     conv_resp = supabase.table("conversations").select("id, organization_id").eq("share_token", share_token).execute()
     if conv_resp.data:
         conv_id = conv_resp.data[0]["id"]
@@ -537,7 +568,6 @@ with st.sidebar:
         else:
             st.info("You are not a member of any organization.")
         
-        # Create new organization form (only show if user has no orgs, or always but tucked)
         with st.expander("➕ Create new organization"):
             org_name = st.text_input("Organization name")
             org_slug = st.text_input("Slug (unique identifier, no spaces)")
@@ -546,6 +576,19 @@ with st.sidebar:
                     create_organization(org_name, org_slug)
                 else:
                     friendly_error("Please enter both name and slug.")
+        
+        # Invite member section (only for admins)
+        if st.session_state.org_role == 'admin' and st.session_state.current_org_id:
+            with st.expander("👥 Invite member"):
+                invite_email = st.text_input("Email address")
+                invite_role = st.selectbox("Role", ["member", "observer"])
+                if st.button("Generate invite link"):
+                    if invite_email:
+                        link = create_invite(st.session_state.current_org_id, invite_email, invite_role)
+                        st.success(f"Invite link (send to {invite_email}):")
+                        st.code(link, language="text")
+                    else:
+                        friendly_error("Please enter an email.")
         
         if st.button("Logout"):
             logout_user()
@@ -638,7 +681,7 @@ with st.sidebar:
         except Exception:
             st.caption("Registry loading...")
         
-        # Observatory button for members and admins (only if current org exists)
+        # Observatory button (only for members/admins)
         if st.session_state.org_role in ['admin', 'member']:
             st.divider()
             st.markdown("### 🔭 Observatory")
