@@ -47,10 +47,10 @@ st.title("⚓ Anchorpoint AI Navigator")
 st.caption("Diagnosing operational gaps. Stewarding certainty.")
 
 # ========== LOAD SECRETS ==========
-SUPABASE_URL = st.secrets["https://iiasatjvwfvkswfqgadg.supabase.co"]
-SUPABASE_ANON_KEY = st.secrets["sb_publishable_yJ0piTKI03yBVuNvoqlzxA_JeF27QU9"]
-GROQ_API_KEY = st.secrets["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"]
-APP_URL = st.secrets.get("https://anchorpoint-navigator.streamlit.app")
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
+GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+APP_URL = st.secrets.get("APP_URL", "https://anchorpoint-navigator.streamlit.app")
 STEWARD_EMAIL = "anchorpointoptimum@gmail.com" 
 
 # ========== INIT CLIENTS ==========
