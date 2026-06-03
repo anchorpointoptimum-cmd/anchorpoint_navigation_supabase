@@ -51,7 +51,7 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 APP_URL = st.secrets.get("APP_URL", "https://anchorpoint-navigator.streamlit.app")
-STEWARD_EMAIL = "anchorpointoptimum@gmail.com" 
+STEWARD_EMAIL = "anchorpointoptimum@gmail.com"  # Replace with your email
 
 # ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -78,6 +78,12 @@ if "editing_title_id" not in st.session_state:
     st.session_state.editing_title_id = None
 if "show_observatory" not in st.session_state:
     st.session_state.show_observatory = False
+if "current_org_id" not in st.session_state:
+    st.session_state.current_org_id = None
+if "user_orgs" not in st.session_state:
+    st.session_state.user_orgs = []
+if "org_role" not in st.session_state:
+    st.session_state.org_role = None
 
 # ========== HELPER FUNCTIONS ==========
 def friendly_error(user_message: str):
@@ -89,7 +95,16 @@ def login_user(email, password):
         st.session_state.auth_user = resp.user
         st.session_state.guest_mode = False
         ensure_profile_exists()
-        load_user_conversations()
+        load_user_organizations()
+        if st.session_state.user_orgs:
+            # If no current org, select first
+            if not st.session_state.current_org_id:
+                st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
+                st.session_state.org_role = st.session_state.user_orgs[0]["role"]
+            load_user_conversations()
+        else:
+            # No orgs yet – show create org UI
+            st.session_state.current_org_id = None
         return True
     except Exception:
         friendly_error("Unable to sign in. Check your email and password, then try again.")
@@ -101,7 +116,8 @@ def signup_user(email, password):
         st.session_state.auth_user = resp.user
         st.session_state.guest_mode = False
         ensure_profile_exists()
-        load_user_conversations()
+        # No organizations initially; user must create or be invited
+        load_user_organizations()
         return True
     except Exception:
         friendly_error("Signup failed. The email may already be registered, or the password is too weak.")
@@ -128,13 +144,73 @@ def logout_user():
     st.session_state.current_conv_id = None
     st.session_state.messages = []
     st.session_state.show_observatory = False
+    st.session_state.current_org_id = None
+    st.session_state.user_orgs = []
+    st.session_state.org_role = None
     st.rerun()
 
-def load_user_conversations():
+def load_user_organizations():
     if not st.session_state.auth_user:
         return
     try:
-        resp = supabase.table("conversations").select("*").eq("user_id", st.session_state.auth_user.id).order("updated_at", desc=True).execute()
+        resp = supabase.table("organization_members").select("organization_id, role, organizations(*)").eq("user_id", st.session_state.auth_user.id).execute()
+        orgs = []
+        for item in resp.data:
+            orgs.append({
+                "id": item["organization_id"],
+                "name": item["organizations"]["name"],
+                "slug": item["organizations"]["slug"],
+                "role": item["role"]
+            })
+        st.session_state.user_orgs = orgs
+        if orgs and not st.session_state.current_org_id:
+            st.session_state.current_org_id = orgs[0]["id"]
+            st.session_state.org_role = orgs[0]["role"]
+    except Exception:
+        st.session_state.user_orgs = []
+
+def create_organization(name, slug):
+    if not st.session_state.auth_user:
+        return False
+    try:
+        # Create organization
+        resp = supabase.table("organizations").insert({
+            "name": name,
+            "slug": slug,
+            "created_by": st.session_state.auth_user.id
+        }).execute()
+        org_id = resp.data[0]["id"]
+        # Add creator as admin
+        supabase.table("organization_members").insert({
+            "organization_id": org_id,
+            "user_id": st.session_state.auth_user.id,
+            "role": "admin"
+        }).execute()
+        load_user_organizations()
+        st.session_state.current_org_id = org_id
+        st.session_state.org_role = "admin"
+        return True
+    except Exception as e:
+        friendly_error(f"Could not create organization: {e}")
+        return False
+
+def switch_organization(org_id):
+    st.session_state.current_org_id = org_id
+    for org in st.session_state.user_orgs:
+        if org["id"] == org_id:
+            st.session_state.org_role = org["role"]
+            break
+    # Clear current conversation and reload
+    st.session_state.current_conv_id = None
+    st.session_state.messages = []
+    load_user_conversations()
+    st.rerun()
+
+def load_user_conversations():
+    if not st.session_state.auth_user or not st.session_state.current_org_id:
+        return
+    try:
+        resp = supabase.table("conversations").select("*").eq("user_id", st.session_state.auth_user.id).eq("organization_id", st.session_state.current_org_id).order("updated_at", desc=True).execute()
         st.session_state.conversations_list = resp.data
         if st.session_state.conversations_list and not st.session_state.current_conv_id:
             st.session_state.current_conv_id = st.session_state.conversations_list[0]["id"]
@@ -170,10 +246,11 @@ def create_new_conversation():
         "parent_id": None
     }
 
-    if st.session_state.auth_user:
+    if st.session_state.auth_user and st.session_state.current_org_id:
         try:
             new_conv = {
                 "user_id": st.session_state.auth_user.id,
+                "organization_id": st.session_state.current_org_id,
                 "title": "New conversation",
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat()
@@ -284,11 +361,9 @@ def generate_share_token(conv_id):
         return token
 
 def save_registry_entry(conv_id, summary_text, conversation_text):
-    """Parse summary, calculate GAS score and leakage estimate, then save."""
-    if not st.session_state.auth_user:
+    if not st.session_state.auth_user or not st.session_state.current_org_id:
         return False
     
-    # Step 1: Extract structured fields from summary
     extraction_prompt = f"""Extract the following fields from this Anchorpoint Navigator summary. Return ONLY valid JSON, no extra text.
 
 Summary:
@@ -304,7 +379,6 @@ Required fields:
 Example response:
 {{"gap_type": "SC", "key_insight": "WhatsApp approvals replace formal system", "persistence_driver": "no delegated authority", "suggested_action": "install delegate rule", "linked_asset": "Nigerian Process Library"}}
 """
-
     try:
         resp1 = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -316,7 +390,6 @@ Example response:
         result = result.replace("```json", "").replace("```", "").strip()
         data = json.loads(result)
         
-        # Step 2: Quantify GAS and leakage based on full conversation
         quantification_prompt = f"""Based on this conversation, estimate:
 1. A GAS score (0-100) where 0=chaotic, 100=fully governed. Use: gap type severity (E=70, K=80, SC=40, CD=30, WE=20), persistence driver severity, and user's tone.
 2. An estimated off‑platform approval leakage percentage (0-100).
@@ -336,9 +409,9 @@ Conversation:
         q_result = q_result.replace("```json", "").replace("```", "").strip()
         q_data = json.loads(q_result)
         
-        # Insert into registry_entries
         supabase.table("registry_entries").insert({
             "conversation_id": conv_id,
+            "organization_id": st.session_state.current_org_id,
             "gap_type": data.get("gap_type"),
             "key_insight": data.get("key_insight"),
             "persistence_driver": data.get("persistence_driver"),
@@ -354,50 +427,49 @@ Conversation:
 
 def show_observatory():
     st.subheader("🔭 Operational Intelligence Observatory")
-    st.caption("Aggregated insights from all registry entries")
+    st.caption(f"Aggregated insights for organization: {st.session_state.current_org_id}")
+    if st.session_state.org_role not in ['admin', 'member']:
+        st.warning("You do not have permission to view the Observatory for this organization.")
+        if st.button("← Back to Navigator"):
+            st.session_state.show_observatory = False
+            st.rerun()
+        return
     
     try:
-        entries = supabase.table("registry_entries").select("*").execute()
+        entries = supabase.table("registry_entries").select("*").eq("organization_id", st.session_state.current_org_id).execute()
         df = pd.DataFrame(entries.data)
         
         if not df.empty:
-            # Gap type distribution
             st.subheader("Gap Type Distribution")
             gap_counts = df['gap_type'].value_counts().reset_index()
             gap_counts.columns = ['Gap Type', 'Count']
             st.bar_chart(gap_counts.set_index('Gap Type'))
             
-            # Top persistence drivers
             st.subheader("Top Persistence Drivers")
             driver_counts = df['persistence_driver'].value_counts().head(5).reset_index()
             driver_counts.columns = ['Driver', 'Count']
             st.dataframe(driver_counts)
             
-            # Most referenced assets
             st.subheader("Most Referenced Assets")
             asset_counts = df['linked_asset'].value_counts().head(5).reset_index()
             asset_counts.columns = ['Asset', 'Count']
             st.dataframe(asset_counts)
             
-            # Timeline
             st.subheader("Entries Over Time")
             df['date'] = pd.to_datetime(df['created_at']).dt.date
             timeline = df.groupby('date').size().reset_index(name='count')
             st.line_chart(timeline.set_index('date'))
             
-            # GAS score distribution (Layer 4)
             st.subheader("GAS Score Distribution")
             gas_data = df[df['gas_score'].notna()]
             if not gas_data.empty:
                 avg_gas = gas_data['gas_score'].mean()
                 st.metric("Average GAS Score", f"{avg_gas:.1f}")
-                # Simple histogram: count per decile
                 gas_data['decile'] = (gas_data['gas_score'] // 10) * 10
                 decile_counts = gas_data['decile'].value_counts().sort_index().reset_index()
                 decile_counts.columns = ['GAS Score Range', 'Count']
                 st.bar_chart(decile_counts.set_index('GAS Score Range'))
             
-            # Leakage estimate distribution
             st.subheader("Estimated Off‑platform Leakage")
             leak_data = df[df['leakage_estimate'].notna()]
             if not leak_data.empty:
@@ -408,7 +480,6 @@ def show_observatory():
                 leak_counts.columns = ['Leakage % Range', 'Count']
                 st.bar_chart(leak_counts.set_index('Leakage % Range'))
             
-            # Raw data toggle
             if st.checkbox("Show raw data"):
                 st.dataframe(df)
         else:
@@ -424,7 +495,7 @@ def show_observatory():
 query_params = st.query_params
 share_token = query_params.get("share")
 if share_token:
-    conv_resp = supabase.table("conversations").select("id").eq("share_token", share_token).execute()
+    conv_resp = supabase.table("conversations").select("id, organization_id").eq("share_token", share_token).execute()
     if conv_resp.data:
         conv_id = conv_resp.data[0]["id"]
         msgs_resp = supabase.table("messages").select("*").eq("conversation_id", conv_id).order("created_at", asc=True).execute()
@@ -450,6 +521,32 @@ with st.sidebar:
 
     if st.session_state.auth_user:
         st.write(f"👤 {st.session_state.auth_user.email}")
+        
+        # Organization switcher / creator
+        if st.session_state.user_orgs:
+            org_names = {org["id"]: f"{org['name']} ({org['role']})" for org in st.session_state.user_orgs}
+            selected_org_id = st.selectbox(
+                "Organization",
+                options=list(org_names.keys()),
+                format_func=lambda x: org_names[x],
+                index=0 if st.session_state.current_org_id else 0,
+                key="org_selector"
+            )
+            if selected_org_id != st.session_state.current_org_id:
+                switch_organization(selected_org_id)
+        else:
+            st.info("You are not a member of any organization.")
+        
+        # Create new organization form (only show if user has no orgs, or always but tucked)
+        with st.expander("➕ Create new organization"):
+            org_name = st.text_input("Organization name")
+            org_slug = st.text_input("Slug (unique identifier, no spaces)")
+            if st.button("Create Organization"):
+                if org_name and org_slug:
+                    create_organization(org_name, org_slug)
+                else:
+                    friendly_error("Please enter both name and slug.")
+        
         if st.button("Logout"):
             logout_user()
     else:
@@ -484,7 +581,7 @@ with st.sidebar:
     if st.button("➕ New conversation", use_container_width=True):
         create_new_conversation()
 
-    if st.session_state.auth_user:
+    if st.session_state.auth_user and st.session_state.current_org_id:
         for conv in st.session_state.conversations_list:
             conv_id = conv["id"]
             is_editing = (st.session_state.editing_title_id == conv_id)
@@ -541,13 +638,15 @@ with st.sidebar:
         except Exception:
             st.caption("Registry loading...")
         
-        # Observatory button for steward only
-        if st.session_state.auth_user.email == STEWARD_EMAIL:
+        # Observatory button for members and admins (only if current org exists)
+        if st.session_state.org_role in ['admin', 'member']:
             st.divider()
             st.markdown("### 🔭 Observatory")
             if st.button("📊 View Intelligence Dashboard"):
                 st.session_state.show_observatory = True
                 st.rerun()
+    elif st.session_state.auth_user and not st.session_state.current_org_id:
+        st.info("Create or join an organization to start saving conversations.")
     else:
         st.info("💡 Sign in to save conversations and contribute to your governance profile.")
         if st.session_state.messages:
@@ -624,7 +723,7 @@ if not st.session_state.edit_msg_id:
                 st.info("💡 You're in guest mode. Create an account to add this conversation to your governance profile.")
         st.rerun()
 
-# Summary generation with registry save (Layer 2 + Layer 4)
+# Summary generation with registry save
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -647,7 +746,6 @@ if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
             st.session_state.summary = summary
             st.session_state.summary_shown = True
             
-            # Save to Registry Intelligence (Layer 2 + Layer 4)
             if st.session_state.auth_user and st.session_state.current_conv_id:
                 save_registry_entry(st.session_state.current_conv_id, summary, conv_text)
             
