@@ -51,7 +51,8 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 APP_URL = st.secrets.get("APP_URL", "https://anchorpointnavigationsupabase-lq5rflwrxgztuq8awnpqx5.streamlit.app")
-STEWARD_EMAIL = "anchorpointoptimum@gmail.com" 
+STEWARD_EMAIL = "anchorpointoptimum@gmail.com"
+
 # ========== INIT CLIENTS ==========
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
