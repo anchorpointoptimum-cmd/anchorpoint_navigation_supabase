@@ -68,7 +68,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ========== MAIN HEADER WITH LOGO ==========
-logo_url = "https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_official_logo.v2.jpeg"st.image(logo_url, width=150)
+logo_url = "https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_official_logo.v2.jpeg"
+st.image(logo_url, width=150)
 st.title("Anchorpoint AI Navigator")
 st.caption("Diagnosing operational gaps. Stewarding certainty.")
 
