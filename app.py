@@ -7,6 +7,8 @@ from supabase import create_client, Client
 import os
 import json
 import pandas as pd
+from fpdf import FPDF  # PDF generation
+import tempfile
 
 # ========== PASSWORD PROTECTION ==========
 def check_password():
@@ -66,7 +68,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ========== MAIN HEADER WITH LOGO ==========
-# Logo (replace filename if needed)
 logo_url = "https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_logo.jpeg"
 st.image(logo_url, width=150)
 st.title("Anchorpoint AI Navigator")
@@ -111,7 +112,7 @@ if "user_orgs" not in st.session_state:
 if "org_role" not in st.session_state:
     st.session_state.org_role = None
 
-# ========== RESTORE SESSION FROM COOKIE (FIX REFRESH) ==========
+# ========== RESTORE SESSION FROM COOKIE ==========
 if not st.session_state.auth_user:
     try:
         session = supabase.auth.get_session()
@@ -808,7 +809,7 @@ if not st.session_state.edit_msg_id:
                 st.info("💡 You're in guest mode. Create an account to add this conversation to your governance profile.")
         st.rerun()
 
-# Summary generation with registry save
+# ========== SUMMARY GENERATION WITH PDF AND TEXT DOWNLOAD ==========
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -837,14 +838,55 @@ if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
             st.rerun()
 
 if "summary" in st.session_state:
-    st.success("Summary generated – screenshot or download below:")
+    st.success("Summary generated – download below:")
     st.markdown(st.session_state.summary)
+
+    # --- Text download (existing) ---
     st.download_button(
         label="📥 Download Summary (.txt)",
         data=st.session_state.summary,
         file_name=f"anchorpoint_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
         mime="text/plain",
     )
+
+    # --- PDF download (new) ---
+    try:
+        # Define PDF class with header/footer
+        class PDF(FPDF):
+            def header(self):
+                self.set_font('Arial', 'B', 12)
+                self.cell(0, 10, 'Anchorpoint AI Navigator', 0, 1, 'C')
+                self.ln(5)
+
+            def footer(self):
+                self.set_y(-15)
+                self.set_font('Arial', 'I', 8)
+                self.cell(0, 10, f'Generated on {datetime.now().strftime("%Y-%m-%d %H:%M")} - Anchorpoint Operational Intelligence', 0, 0, 'C')
+
+        pdf = PDF()
+        pdf.add_page()
+        pdf.set_font('Arial', '', 11)
+        # Simple markdown stripping (remove ** and __)
+        summary_text_plain = st.session_state.summary.replace('**', '').replace('__', '')
+        pdf.multi_cell(0, 8, summary_text_plain)
+        pdf.ln(5)
+        pdf.cell(0, 8, "This diagnostic is a field log entry and can inform your Governance Adoption Score (GAS).", 0, 1, 'C')
+
+        # Write to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            pdf.output(tmp.name)
+            tmp.seek(0)
+            pdf_data = tmp.read()
+
+        st.download_button(
+            label="📄 Download Summary (PDF)",
+            data=pdf_data,
+            file_name=f"anchorpoint_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+            mime="application/pdf",
+        )
+    except Exception as e:
+        st.warning(f"PDF export not available: {e}")
+
     st.caption("This diagnostic is a field log entry and has been saved to your Registry Intelligence with a GAS score and leakage estimate.")
     if st.button("Start new conversation"):
         create_new_conversation()
