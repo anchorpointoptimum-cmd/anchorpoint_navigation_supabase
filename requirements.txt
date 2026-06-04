@@ -2,3 +2,4 @@ streamlit
 groq
 supabase
 python-dotenv
+fpdf
