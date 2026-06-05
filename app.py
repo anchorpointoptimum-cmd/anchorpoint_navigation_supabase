@@ -71,7 +71,7 @@ st.markdown("""
         border: 1px solid #cccccc;
     }
     .stTextArea textarea::placeholder {
-        color: #6c757d !important;  /* visible grey */
+        color: #6c757d !important;  /* visible gray */
         opacity: 1;
     }
     /* Ensure the text input itself is readable */
