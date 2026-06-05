@@ -7,7 +7,7 @@ from supabase import create_client, Client
 import os
 import json
 import pandas as pd
-from fpdf import FPDF  # PDF generation
+from fpdf import FPDF
 import tempfile
 
 # ========== PASSWORD PROTECTION ==========
@@ -111,6 +111,10 @@ if "user_orgs" not in st.session_state:
     st.session_state.user_orgs = []
 if "org_role" not in st.session_state:
     st.session_state.org_role = None
+if "pending_context" not in st.session_state:
+    st.session_state.pending_context = None
+if "context_shown_for" not in st.session_state:
+    st.session_state.context_shown_for = None
 
 # ========== RESTORE SESSION FROM COOKIE ==========
 if not st.session_state.auth_user:
@@ -456,6 +460,8 @@ def logout_user():
     st.session_state.current_org_id = None
     st.session_state.user_orgs = []
     st.session_state.org_role = None
+    st.session_state.pending_context = None
+    st.session_state.context_shown_for = None
     st.rerun()
 
 def switch_organization(org_id):
@@ -466,6 +472,8 @@ def switch_organization(org_id):
             break
     st.session_state.current_conv_id = None
     st.session_state.messages = []
+    st.session_state.pending_context = None
+    st.session_state.context_shown_for = None
     load_user_conversations()
     st.rerun()
 
@@ -738,9 +746,9 @@ with st.sidebar:
         if st.session_state.messages:
             st.caption("Guest session (intelligence not persisted)")
 
-# ========== MAIN CHAT AREA ==========
+# ========== MAIN CHAT AREA (with context capture) ==========
 if st.session_state.messages:
-    for msg in st.session_state.messages:
+    for idx, msg in enumerate(st.session_state.messages):
         if msg["role"] == "system":
             continue
         with st.chat_message(msg["role"]):
@@ -749,12 +757,27 @@ if st.session_state.messages:
                 if st.button("✏️", key=f"edit_{msg['id']}"):
                     st.session_state.edit_msg_id = msg["id"]
                     st.rerun()
+            # After assistant message that ends with "?" and not already answered, show context field
+            if msg["role"] == "assistant" and msg["content"].strip().endswith("?"):
+                if idx == len(st.session_state.messages) - 1 and st.session_state.context_shown_for != msg["id"]:
+                    with st.form(key=f"context_form_{msg['id']}"):
+                        context = st.text_area(
+                            "Optional: Add context to help me understand better (e.g., 'The manager is often away on Mondays')",
+                            key=f"context_{msg['id']}",
+                            placeholder="e.g., The store manager is often away on Mondays, so the team uses WhatsApp."
+                        )
+                        submitted = st.form_submit_button("Submit context & continue")
+                        if submitted:
+                            if context.strip():
+                                st.session_state.pending_context = context.strip()
+                            st.session_state.context_shown_for = msg["id"]
+                            st.rerun()
 else:
     if not st.session_state.messages:
         create_new_conversation()
         st.rerun()
 
-# Edit modal
+# ========== EDIT MODAL ==========
 if st.session_state.edit_msg_id:
     msg_to_edit = next((m for m in st.session_state.messages if m.get("id") == st.session_state.edit_msg_id), None)
     if msg_to_edit:
@@ -784,10 +807,17 @@ if st.session_state.edit_msg_id:
         st.session_state.edit_msg_id = None
         st.rerun()
 
-# Chat input
+# ========== CHAT INPUT (with context injection) ==========
 if not st.session_state.edit_msg_id:
     if prompt := st.chat_input("Describe an operational process or challenge..."):
-        user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": prompt}
+        # Inject pending context if any
+        if st.session_state.pending_context:
+            full_prompt = f"[Context provided: {st.session_state.pending_context}]\n\nUser: {prompt}"
+            st.session_state.pending_context = None
+        else:
+            full_prompt = prompt
+        
+        user_msg = {"id": str(uuid.uuid4()), "role": "user", "content": full_prompt}
         st.session_state.messages.append(user_msg)
         with st.spinner("Diagnosing..."):
             reply = get_assistant_response(st.session_state.messages)
@@ -809,7 +839,7 @@ if not st.session_state.edit_msg_id:
                 st.info("💡 You're in guest mode. Create an account to add this conversation to your governance profile.")
         st.rerun()
 
-# ========== SUMMARY GENERATION WITH PDF AND TEXT DOWNLOAD ==========
+# ========== SUMMARY GENERATION (PDF + text) ==========
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -841,7 +871,7 @@ if "summary" in st.session_state:
     st.success("Summary generated – download below:")
     st.markdown(st.session_state.summary)
 
-    # --- Text download (existing) ---
+    # Text download
     st.download_button(
         label="📥 Download Summary (.txt)",
         data=st.session_state.summary,
@@ -849,9 +879,8 @@ if "summary" in st.session_state:
         mime="text/plain",
     )
 
-    # --- PDF download (new) ---
+    # PDF download
     try:
-        # Define PDF class with header/footer
         class PDF(FPDF):
             def header(self):
                 self.set_font('Arial', 'B', 12)
@@ -866,13 +895,11 @@ if "summary" in st.session_state:
         pdf = PDF()
         pdf.add_page()
         pdf.set_font('Arial', '', 11)
-        # Simple markdown stripping (remove ** and __)
         summary_text_plain = st.session_state.summary.replace('**', '').replace('__', '')
         pdf.multi_cell(0, 8, summary_text_plain)
         pdf.ln(5)
         pdf.cell(0, 8, "This diagnostic is a field log entry and can inform your Governance Adoption Score (GAS).", 0, 1, 'C')
 
-        # Write to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             pdf.output(tmp.name)
             tmp.seek(0)
