@@ -64,9 +64,23 @@ st.markdown("""
     [data-testid="stChatMessage"][data-testid*="assistant"] {
         background-color: #f8f9fa !important;
     }
+    /* Fix text area background and placeholder visibility */
+    .stTextArea textarea {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border: 1px solid #cccccc;
+    }
+    .stTextArea textarea::placeholder {
+        color: #6c757d !important;  /* visible grey */
+        opacity: 1;
+    }
+    /* Ensure the text input itself is readable */
+    .stTextInput input {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
-
 # ========== MAIN HEADER WITH LOGO ==========
 logo_url = "https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_official_logo.v2.jpeg"
 st.image(logo_url, width=150)
