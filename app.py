@@ -34,7 +34,7 @@ check_password()
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
-# ========== BRANDING CSS ==========
+# ========== BRANDING CSS (with placeholder fix) ==========
 st.markdown("""
 <style>
     .stApp { background-color: #e9ecef; }
@@ -71,16 +71,16 @@ st.markdown("""
         border: 1px solid #cccccc;
     }
     .stTextArea textarea::placeholder {
-        color: #6c757d !important;  /* visible gray */
+        color: #6c757d !important;
         opacity: 1;
     }
-    /* Ensure the text input itself is readable */
     .stTextInput input {
         background-color: #ffffff !important;
         color: #111111 !important;
     }
 </style>
 """, unsafe_allow_html=True)
+
 # ========== MAIN HEADER WITH LOGO ==========
 logo_url = "https://raw.githubusercontent.com/anchorpointoptimum-cmd/anchorpoint_navigation_supabase/main/anchorpoint_official_logo.v2.jpeg"
 st.image(logo_url, width=150)
@@ -130,7 +130,7 @@ if "pending_context" not in st.session_state:
 if "context_shown_for" not in st.session_state:
     st.session_state.context_shown_for = None
 
-# ========== RESTORE SESSION FROM COOKIE ==========
+# ========== RESTORE SESSION FROM COOKIE (fix refresh) ==========
 if not st.session_state.auth_user:
     try:
         session = supabase.auth.get_session()
@@ -139,6 +139,9 @@ if not st.session_state.auth_user:
             st.session_state.guest_mode = False
             ensure_profile_exists()
             load_user_organizations()
+            # Ensure at least one organisation
+            if not st.session_state.user_orgs:
+                create_default_organization()
             if st.session_state.user_orgs and not st.session_state.current_org_id:
                 st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
                 st.session_state.org_role = st.session_state.user_orgs[0]["role"]
@@ -192,6 +195,32 @@ def ensure_profile_exists():
             }).execute()
     except Exception:
         pass
+
+def create_default_organization():
+    """Create a personal organization for the authenticated user."""
+    if not st.session_state.auth_user:
+        return False
+    try:
+        slug = hashlib.md5(st.session_state.auth_user.id.encode()).hexdigest()[:12]
+        # Insert organization
+        org_resp = supabase.table("organizations").insert({
+            "name": f"{st.session_state.auth_user.email}'s Workspace",
+            "slug": slug,
+            "created_by": st.session_state.auth_user.id
+        }).execute()
+        org_id = org_resp.data[0]["id"]
+        # Add user as admin
+        supabase.table("organization_members").insert({
+            "organization_id": org_id,
+            "user_id": st.session_state.auth_user.id,
+            "role": "admin"
+        }).execute()
+        # Reload organisations
+        load_user_organizations()
+        return True
+    except Exception as e:
+        st.error(f"Could not create default organization: {e}")
+        return False
 
 def load_user_organizations():
     if not st.session_state.auth_user:
@@ -288,6 +317,7 @@ def create_new_conversation():
             ]
             st.session_state.current_conv_id = None
     else:
+        # Guest mode or missing org
         st.session_state.messages = [
             {"role": "system", "content": system_msg_content, "id": str(uuid.uuid4())},
             opening_assistant_msg
@@ -439,12 +469,18 @@ def login_user(email, password):
         st.session_state.guest_mode = False
         ensure_profile_exists()
         load_user_organizations()
+        # If still no organizations, create a default one
+        if not st.session_state.user_orgs:
+            create_default_organization()
         if st.session_state.user_orgs:
             st.session_state.current_org_id = st.session_state.user_orgs[0]["id"]
             st.session_state.org_role = st.session_state.user_orgs[0]["role"]
             load_user_conversations()
             if st.session_state.current_conv_id is None:
                 create_new_conversation()
+        else:
+            st.error("Could not create or find an organization. Please contact support.")
+            return False
         st.rerun()
         return True
     except Exception as e:
@@ -458,6 +494,9 @@ def signup_user(email, password):
         st.session_state.guest_mode = False
         ensure_profile_exists()
         load_user_organizations()
+        # New user has no orgs; create default organization
+        if not st.session_state.user_orgs:
+            create_default_organization()
         st.rerun()
         return True
     except Exception as e:
@@ -489,6 +528,8 @@ def switch_organization(org_id):
     st.session_state.pending_context = None
     st.session_state.context_shown_for = None
     load_user_conversations()
+    if st.session_state.current_conv_id is None:
+        create_new_conversation()
     st.rerun()
 
 def create_invite(org_id, email, role):
@@ -520,6 +561,8 @@ def create_organization(name, slug):
         st.session_state.current_org_id = org_id
         st.session_state.org_role = "admin"
         load_user_conversations()
+        if st.session_state.current_conv_id is None:
+            create_new_conversation()
         return True
     except Exception as e:
         st.error(f"Could not create organization: {e}")
