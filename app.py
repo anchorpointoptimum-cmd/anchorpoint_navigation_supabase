@@ -1,6 +1,7 @@
 import streamlit as st
 import hashlib
 import uuid
+import re
 from datetime import datetime
 from groq import Groq
 from supabase import create_client, Client
@@ -34,7 +35,7 @@ check_password()
 
 st.set_page_config(page_title="Anchorpoint Navigator", page_icon="⚓", layout="wide")
 
-# ========== BRANDING CSS (with placeholder fix) ==========
+# ========== BRANDING CSS (placeholder fix) ==========
 st.markdown("""
 <style>
     .stApp { background-color: #e9ecef; }
@@ -64,7 +65,7 @@ st.markdown("""
     [data-testid="stChatMessage"][data-testid*="assistant"] {
         background-color: #f8f9fa !important;
     }
-    /* Fix text area background and placeholder visibility */
+    /* Fix text area visibility */
     .stTextArea textarea {
         background-color: #ffffff !important;
         color: #111111 !important;
@@ -130,7 +131,7 @@ if "pending_context" not in st.session_state:
 if "context_shown_for" not in st.session_state:
     st.session_state.context_shown_for = None
 
-# ========== RESTORE SESSION FROM COOKIE (fix refresh) ==========
+# ========== RESTORE SESSION FROM COOKIE ==========
 if not st.session_state.auth_user:
     try:
         session = supabase.auth.get_session()
@@ -139,7 +140,6 @@ if not st.session_state.auth_user:
             st.session_state.guest_mode = False
             ensure_profile_exists()
             load_user_organizations()
-            # Ensure at least one organisation
             if not st.session_state.user_orgs:
                 create_default_organization()
             if st.session_state.user_orgs and not st.session_state.current_org_id:
@@ -201,7 +201,12 @@ def create_default_organization():
     if not st.session_state.auth_user:
         return False
     try:
-        slug = hashlib.md5(st.session_state.auth_user.id.encode()).hexdigest()[:12]
+        # Generate a unique slug from email
+        slug = re.sub(r'[^a-z0-9]+', '-', st.session_state.auth_user.email.split('@')[0].lower()).strip('-')
+        # Ensure uniqueness
+        existing = supabase.table("organizations").select("slug").eq("slug", slug).execute()
+        if existing.data:
+            slug = f"{slug}-{uuid.uuid4().hex[:4]}"
         # Insert organization
         org_resp = supabase.table("organizations").insert({
             "name": f"{st.session_state.auth_user.email}'s Workspace",
@@ -215,7 +220,6 @@ def create_default_organization():
             "user_id": st.session_state.auth_user.id,
             "role": "admin"
         }).execute()
-        # Reload organisations
         load_user_organizations()
         return True
     except Exception as e:
@@ -317,7 +321,6 @@ def create_new_conversation():
             ]
             st.session_state.current_conv_id = None
     else:
-        # Guest mode or missing org
         st.session_state.messages = [
             {"role": "system", "content": system_msg_content, "id": str(uuid.uuid4())},
             opening_assistant_msg
@@ -469,7 +472,6 @@ def login_user(email, password):
         st.session_state.guest_mode = False
         ensure_profile_exists()
         load_user_organizations()
-        # If still no organizations, create a default one
         if not st.session_state.user_orgs:
             create_default_organization()
         if st.session_state.user_orgs:
@@ -494,7 +496,6 @@ def signup_user(email, password):
         st.session_state.guest_mode = False
         ensure_profile_exists()
         load_user_organizations()
-        # New user has no orgs; create default organization
         if not st.session_state.user_orgs:
             create_default_organization()
         st.rerun()
@@ -678,14 +679,20 @@ with st.sidebar:
         else:
             st.info("You are not a member of any organization.")
         
+        # Simplified organization creation (no slug field)
         with st.expander("➕ Create new organization"):
             org_name = st.text_input("Organization name")
-            org_slug = st.text_input("Slug (unique identifier, no spaces)")
             if st.button("Create Organization"):
-                if org_name and org_slug:
-                    create_organization(org_name, org_slug)
+                if org_name:
+                    # Auto-generate slug
+                    slug = re.sub(r'[^a-z0-9]+', '-', org_name.lower()).strip('-')
+                    # Ensure uniqueness
+                    existing = supabase.table("organizations").select("slug").eq("slug", slug).execute()
+                    if existing.data:
+                        slug = f"{slug}-{uuid.uuid4().hex[:4]}"
+                    create_organization(org_name, slug)
                 else:
-                    st.error("Please enter both name and slug.")
+                    st.error("Please enter an organization name.")
         
         if st.session_state.org_role == 'admin' and st.session_state.current_org_id:
             with st.expander("👥 Invite member"):
@@ -867,7 +874,6 @@ if st.session_state.edit_msg_id:
 # ========== CHAT INPUT (with context injection) ==========
 if not st.session_state.edit_msg_id:
     if prompt := st.chat_input("Describe an operational process or challenge..."):
-        # Inject pending context if any
         if st.session_state.pending_context:
             full_prompt = f"[Context provided: {st.session_state.pending_context}]\n\nUser: {prompt}"
             st.session_state.pending_context = None
@@ -896,7 +902,7 @@ if not st.session_state.edit_msg_id:
                 st.info("💡 You're in guest mode. Create an account to add this conversation to your governance profile.")
         st.rerun()
 
-# ========== SUMMARY GENERATION (PDF + text) ==========
+# ========== SUMMARY GENERATION ==========
 assistant_msgs = [m for m in st.session_state.messages if m["role"] == "assistant"]
 if len(assistant_msgs) >= 3 and "summary_shown" not in st.session_state:
     st.divider()
@@ -928,7 +934,6 @@ if "summary" in st.session_state:
     st.success("Summary generated – download below:")
     st.markdown(st.session_state.summary)
 
-    # Text download
     st.download_button(
         label="📥 Download Summary (.txt)",
         data=st.session_state.summary,
@@ -936,7 +941,6 @@ if "summary" in st.session_state:
         mime="text/plain",
     )
 
-    # PDF download
     try:
         class PDF(FPDF):
             def header(self):
